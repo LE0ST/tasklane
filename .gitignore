@@ -1,4 +1,4 @@
-﻿# Byte-compiled / optimized files
+# Byte-compiled / optimized files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -18,6 +18,10 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+backend/tasklane.db
+backend/tasklane.db-shm
+backend/tasklane.db-wal
+
 
 # Node & Frontend dependencies/builds
 node_modules/

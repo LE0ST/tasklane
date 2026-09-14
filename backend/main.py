@@ -1,7 +1,13 @@
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
 
+from database import Base, engine, get_db
+from models import Task
 from schemas import (
     ErrorResponse,
     TaskCreate,
@@ -10,12 +16,20 @@ from schemas import (
     TaskStatus,
     TaskUpdate,
 )
-from store import store
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Ensure tables exist on startup
+    Base.metadata.create_all(bind=engine)
+    yield
+
 
 app = FastAPI(
     title="TaskLane API",
     version="0.1.0",
-    description="FastAPI backend for TaskLane Mini Kanban Board",
+    description="FastAPI backend for TaskLane Mini Kanban Board with SQLAlchemy",
+    lifespan=lifespan,
 )
 
 # Enable CORS for development frontend
@@ -31,7 +45,6 @@ app.add_middleware(
 )
 
 
-
 @app.get(
     "/api/tasks",
     response_model=List[TaskResponse],
@@ -41,8 +54,21 @@ def list_tasks(
     status: Optional[TaskStatus] = Query(None, description="Filter by status"),
     priority: Optional[TaskPriority] = Query(None, description="Filter by priority"),
     search: Optional[str] = Query(None, description="Search term"),
+    db: Session = Depends(get_db),
 ):
-    return store.list_tasks(status=status, priority=priority, search=search)
+    query = db.query(Task)
+    if status:
+        query = query.filter(Task.status == status.value)
+    if priority:
+        query = query.filter(Task.priority == priority.value)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(Task.title.ilike(term), Task.description.ilike(term))
+        )
+
+    # Deterministic ordering: created_at DESC, id DESC
+    return query.order_by(Task.created_at.desc(), Task.id.desc()).all()
 
 
 @app.post(
@@ -51,8 +77,17 @@ def list_tasks(
     status_code=status.HTTP_201_CREATED,
     summary="Create a new task (strictly placed in backlog)",
 )
-def create_task(task_in: TaskCreate):
-    return store.create_task(task_in)
+def create_task(task_in: TaskCreate, db: Session = Depends(get_db)):
+    db_task = Task(
+        title=task_in.title,
+        description=task_in.description,
+        status=TaskStatus.backlog.value,
+        priority=task_in.priority.value,
+    )
+    db.add(db_task)
+    db.commit()
+    db.refresh(db_task)
+    return db_task
 
 
 @app.get(
@@ -61,8 +96,8 @@ def create_task(task_in: TaskCreate):
     responses={404: {"model": ErrorResponse}},
     summary="Get task details by ID",
 )
-def get_task(task_id: int):
-    task = store.get_task(task_id)
+def get_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -77,14 +112,25 @@ def get_task(task_id: int):
     responses={404: {"model": ErrorResponse}},
     summary="Partially update a task",
 )
-def update_task(task_id: int, task_in: TaskUpdate):
-    updated = store.update_task(task_id, task_in)
-    if not updated:
+def update_task(task_id: int, task_in: TaskUpdate, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found",
         )
-    return updated
+
+    update_data = task_in.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        if isinstance(value, (TaskStatus, TaskPriority)):
+            setattr(task, field, value.value)
+        else:
+            setattr(task, field, value)
+
+    task.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(task)
+    return task
 
 
 @app.delete(
@@ -93,11 +139,13 @@ def update_task(task_id: int, task_in: TaskUpdate):
     responses={404: {"model": ErrorResponse}},
     summary="Delete a task by ID",
 )
-def delete_task(task_id: int):
-    success = store.delete_task(task_id)
-    if not success:
+def delete_task(task_id: int, db: Session = Depends(get_db)):
+    task = db.query(Task).filter(Task.id == task_id).first()
+    if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Task {task_id} not found",
         )
+    db.delete(task)
+    db.commit()
     return None

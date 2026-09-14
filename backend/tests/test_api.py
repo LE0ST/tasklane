@@ -1,16 +1,41 @@
 import pytest
 from fastapi.testclient import TestClient
-from main import app
-from store import store
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from database import Base, get_db
+from main import app
+from models import Task
+
+# Test SQLite in-memory database with StaticPool for thread-safe test isolation
+TEST_DATABASE_URL = "sqlite:///:memory:"
+test_engine = create_engine(
+    TEST_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool,
+)
+TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+
+
+def override_get_db():
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+app.dependency_overrides[get_db] = override_get_db
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def clean_store():
-    store.reset()
+def setup_test_database():
+    Base.metadata.drop_all(bind=test_engine)
+    Base.metadata.create_all(bind=test_engine)
     yield
-    store.reset()
+    Base.metadata.drop_all(bind=test_engine)
 
 
 def test_create_task_success():
@@ -140,3 +165,25 @@ def test_non_existent_resource_returns_404():
     assert client.get("/api/tasks/999").status_code == 404
     assert client.patch("/api/tasks/999", json={"title": "New"}).status_code == 404
     assert client.delete("/api/tasks/999").status_code == 404
+
+
+def test_database_persistence_across_sessions():
+    """AC-9: Verify data is committed to relational storage and queryable via separate DB session."""
+    res = client.post(
+        "/api/tasks",
+        json={"title": "Persisted Task", "description": "Stored in SQLite", "priority": "urgent"},
+    )
+    assert res.status_code == 201
+    created_id = res.json()["id"]
+
+    # Open a completely independent database session
+    db = TestingSessionLocal()
+    try:
+        db_task = db.query(Task).filter(Task.id == created_id).first()
+        assert db_task is not None
+        assert db_task.title == "Persisted Task"
+        assert db_task.description == "Stored in SQLite"
+        assert db_task.status == "backlog"
+        assert db_task.priority == "urgent"
+    finally:
+        db.close()
