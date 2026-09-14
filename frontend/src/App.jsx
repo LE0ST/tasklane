@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { apiClient } from './services/api';
 import './App.css';
 
@@ -106,7 +106,7 @@ export default function App() {
       <header className="app-header">
         <div className="brand-section">
           <h1>TaskLane</h1>
-          <p>Mini Kanban Board &middot; Mock Backend Mode</p>
+          <p>Mini Kanban Board &middot; FastAPI Connected</p>
         </div>
 
         <div className="header-controls">

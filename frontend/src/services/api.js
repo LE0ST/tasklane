@@ -1,10 +1,10 @@
-﻿/**
+/**
  * TaskLane Centralized API Client Abstraction
  * Supports both real backend calls and mocked local execution.
  */
 
 const API_BASE_URL = 'http://localhost:8000';
-let useMock = true;
+let useMock = false;
 
 // Initial mock dataset for development and demonstration
 const DEFAULT_TASKS = [
