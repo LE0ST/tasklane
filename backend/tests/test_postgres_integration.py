@@ -22,7 +22,8 @@ _test_url_obj = make_url(TEST_DB_URL)
 _test_db_name = _test_url_obj.database or ""
 
 assert _test_db_name == "tasklane_test" or _test_db_name.endswith("_test"), (
-    f"Safety violation: integration tests must target a dedicated test database (ending in '_test' or named 'tasklane_test'), got database name: '{_test_db_name}' from URL: {TEST_DB_URL}"
+    f"Safety violation: integration tests must target a dedicated test database (ending in '_test' or named 'tasklane_test'), "
+    f"got database name: '{_test_db_name}' from URL: {_test_url_obj.render_as_string(hide_password=True)}"
 )
 assert _test_db_name != "tasklane", (
     f"Safety violation: integration tests must never run against main database '{_test_db_name}'"
@@ -40,11 +41,15 @@ def is_postgres_available() -> bool:
         return False
 
 
+_in_ci = os.getenv("CI", "").lower() in ("true", "1")
+
+# In CI environments, PostgreSQL is provisioned and MUST be available.
+# Never skip integration tests in CI; let them execute and fail if connection drops.
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(
-        not is_postgres_available(),
-        reason="PostgreSQL test database not available at localhost:5432/tasklane_test"
+        not _in_ci and not is_postgres_available(),
+        reason="PostgreSQL test database not available at localhost:5432/tasklane_test (skipped in local development)"
     )
 ]
 

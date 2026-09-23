@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-tests:
+    name: Backend Tests & PostgreSQL Integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tasklane
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Create dedicated test database
+        working-directory: backend
+        run: |
+          uv run python -c "from sqlalchemy import create_engine, text; engine = create_engine('postgresql://postgres:postgres@localhost:5432/postgres'); conn = engine.connect().execution_options(isolation_level='AUTOCOMMIT'); conn.execute(text('CREATE DATABASE tasklane_test')); conn.close(); engine.dispose()"
+
+      - name: Run Alembic migrations against PostgreSQL
+        working-directory: backend
+        run: uv run alembic upgrade head
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tasklane_test
+
+      - name: Run backend unit and PostgreSQL integration tests
+        working-directory: backend
+        run: uv run pytest -v --strict-markers
+        env:
+          CI: "true"
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tasklane_test
+
+  frontend-build:
+    name: Frontend Build & Asset Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend production bundle
+        working-directory: frontend
+        run: npm run build
+
+  docker-e2e-smoke:
+    name: Docker Build, Smoke Tests & Playwright E2E
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-build]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build multi-stage Docker image
+        run: docker build -t tasklane:hw3 .
+
+      - name: Start Docker Compose stack
+        run: docker compose up -d
+
+      - name: Wait for application healthcheck
+        run: |
+          echo "Waiting for http://localhost:8000/health..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health | grep -q "healthy"; then
+              echo "Application is healthy!"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Application failed to become healthy within 60 seconds."
+              docker compose logs
+              exit 1
+            fi
+            echo "Waiting for health endpoint... (attempt $i/30)"
+            sleep 2
+          done
+
+      - name: Execute HTTP smoke tests
+        run: |
+          echo "1. Checking health endpoint payload..."
+          HEALTH=$(curl -sf http://localhost:8000/health)
+          echo "$HEALTH" | grep -q '"status":"healthy"'
+
+          echo "2. Checking initial /api/tasks endpoint..."
+          curl -sf http://localhost:8000/api/tasks
+
+          echo "3. Creating a smoke test task..."
+          CREATED=$(curl -sf -X POST http://localhost:8000/api/tasks \
+            -H "Content-Type: application/json" \
+            -d '{"title": "CI Smoke Task", "description": "Created in CI smoke test", "priority": "high"}')
+          echo "Created task response: $CREATED"
+          echo "$CREATED" | grep -q '"title":"CI Smoke Task"'
+
+          echo "4. Verifying task appears in list..."
+          TASKS=$(curl -sf http://localhost:8000/api/tasks)
+          echo "$TASKS" | grep -q 'CI Smoke Task'
+
+          echo "5. Checking static frontend delivery..."
+          INDEX=$(curl -sf http://localhost:8000/)
+          echo "$INDEX" | grep -q 'id="root"'
+
+          echo "All HTTP smoke tests completed successfully!"
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Install Playwright browsers and system dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E tests
+        working-directory: frontend
+        run: npm run test:e2e
+        env:
+          CI: "true"
+          PLAYWRIGHT_TEST_BASE_URL: "http://localhost:8000"
+
+      - name: Dump Docker Compose logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Upload Playwright test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+      - name: Teardown Docker Compose
+        if: always()
+        run: docker compose down -v
