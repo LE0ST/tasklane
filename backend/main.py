@@ -1,8 +1,11 @@
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import List, Optional
+from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -17,11 +20,32 @@ from schemas import (
     TaskUpdate,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def run_migrations():
+    """Apply Alembic migrations to head if alembic.ini is present, otherwise create_all.
+
+    If Alembic is configured and fails, the exception is logged and raised to prevent startup on bad schema.
+    """
+    alembic_ini_path = Path(__file__).resolve().parent / "alembic.ini"
+    if alembic_ini_path.exists():
+        try:
+            from alembic.config import Config
+            from alembic import command
+            alembic_cfg = Config(str(alembic_ini_path))
+            command.upgrade(alembic_cfg, "head")
+        except Exception as exc:
+            logger.error(f"Database migration failed: {exc}", exc_info=True)
+            raise
+    else:
+        Base.metadata.create_all(bind=engine)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure tables exist on startup
-    Base.metadata.create_all(bind=engine)
+    # Ensure database schema is migrated/ready on startup
+    run_migrations()
     yield
 
 
@@ -149,3 +173,19 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
     db.delete(task)
     db.commit()
     return None
+
+
+@app.get("/health", summary="Health check endpoint", tags=["system"])
+@app.get("/api/health", summary="API health check endpoint", tags=["system"])
+def health_check():
+    """System health check endpoint used by Docker, CI, and deployment platforms."""
+    return {"status": "healthy"}
+
+
+# Mount frontend static assets for production deployment if directory exists
+static_dir = Path(__file__).resolve().parent / "static"
+if not static_dir.exists():
+    static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+if static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")

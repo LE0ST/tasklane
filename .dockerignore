@@ -1,0 +1,47 @@
+# Git & IDE
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.swp
+*.swo
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python & Virtual Environments
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv
+venv/
+ENV/
+env/
+.pytest_cache
+.coverage
+htmlcov/
+
+# Node & Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Local SQLite databases & runtime storage
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+backend/tasklane.db*
+backend/*.db*
+
+# Documentation & Specifications
+_docs/

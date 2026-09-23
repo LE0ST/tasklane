@@ -187,3 +187,34 @@ def test_database_persistence_across_sessions():
         assert db_task.priority == "urgent"
     finally:
         db.close()
+
+
+def test_health_endpoints():
+    """Verify system and API health check endpoints return 200 OK."""
+    res_root = client.get("/health")
+    assert res_root.status_code == 200
+    assert res_root.json() == {"status": "healthy"}
+
+    res_api = client.get("/api/health")
+    assert res_api.status_code == 200
+    assert res_api.json() == {"status": "healthy"}
+
+
+def test_root_serves_frontend():
+    """Verify root endpoint / serves index.html when frontend dist is present."""
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "<!doctype html>" in res.text.lower() or "<html" in res.text.lower()
+
+
+def test_run_migrations_propagates_exception_on_failure(monkeypatch):
+    """Verify that when Alembic upgrade fails, run_migrations raises the exception."""
+    from main import run_migrations
+    from alembic import command
+
+    def mock_upgrade_fail(*args, **kwargs):
+        raise RuntimeError("Simulated Alembic migration failure")
+
+    monkeypatch.setattr(command, "upgrade", mock_upgrade_fail)
+    with pytest.raises(RuntimeError, match="Simulated Alembic migration failure"):
+        run_migrations()
