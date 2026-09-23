@@ -202,6 +202,9 @@ def test_health_endpoints():
 
 def test_root_serves_frontend():
     """Verify root endpoint / serves index.html when frontend dist is present."""
+    from main import static_dir
+    if not static_dir.exists():
+        pytest.skip("Frontend dist or static directory not present (build frontend first)")
     res = client.get("/")
     assert res.status_code == 200
     assert "<!doctype html>" in res.text.lower() or "<html" in res.text.lower()
