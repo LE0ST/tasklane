@@ -13,6 +13,8 @@ ENV/
 .pytest_cache/
 .coverage
 htmlcov/
+playwright-report/
+test-results/
 
 # Local databases
 *.db

@@ -27,6 +27,8 @@ env/
 .pytest_cache
 .coverage
 htmlcov/
+playwright-report/
+test-results/
 
 # Node & Frontend
 node_modules/

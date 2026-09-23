@@ -19,15 +19,17 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set database URL dynamically
-config.set_main_option("sqlalchemy.url", get_database_url())
+# Set database URL dynamically if not already provided by config/caller
+current_url = config.get_main_option("sqlalchemy.url")
+if not current_url or "driver://user:pass" in current_url:
+    config.set_main_option("sqlalchemy.url", get_database_url())
 
 target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = get_database_url()
+    url = config.get_main_option("sqlalchemy.url") or get_database_url()
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -41,7 +43,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    url = get_database_url()
+    url = config.get_main_option("sqlalchemy.url") or get_database_url()
     connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
 
     connectable = create_engine(

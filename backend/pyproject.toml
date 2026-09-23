@@ -21,3 +21,6 @@ dev = [
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "integration: marks integration tests requiring PostgreSQL",
+]
