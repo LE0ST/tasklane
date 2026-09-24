@@ -47,5 +47,5 @@ EXPOSE 8000
 ENV HOST=0.0.0.0 \
     PORT=8000
 
-# Start Uvicorn ASGI server with dynamic HOST and PORT expansion
-CMD ["sh", "-c", "uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]
+# Start Uvicorn ASGI server with dynamic HOST and PORT expansion and graceful signal handling
+CMD ["sh", "-c", "exec uvicorn main:app --host ${HOST:-0.0.0.0} --port ${PORT:-8000}"]
