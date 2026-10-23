@@ -28,7 +28,14 @@ This project was developed across the **AI Dev Tools Zoomcamp 2026** by DataTalk
    - Created **Docker Compose** stack with isolated PostgreSQL services and health checks.
    - Implemented automated **PostgreSQL integration tests** and **Playwright E2E browser tests**.
    - Built a 3-stage **GitHub Actions CI/CD** pipeline verifying builds, tests, Compose, and E2E in Chromium.
-   - Deployed live to **Render** (Docker Web Service + Managed PostgreSQL).
+   - Deployed live to **Render** (Docker Web Service).
+
+3. **Project 1 (Observability, Autonomous Incident Response, and Production Continuity)**:
+   - Migrated production database to **Neon Serverless PostgreSQL 16** (`tasklane` project, **`import`** branch, `neondb` database) to secure database persistence and eliminate Render's 30-day free-tier expiration risk (Render Free PostgreSQL expires October 24, 2026).
+   - The former Render PostgreSQL (`tasklane-db`) served only as a temporary reference source for migration verification prior to its expiration.
+   - Verified live migration: newly created tasks persist in Neon `neondb` and are absent from the former Render database.
+   - Established specialized multi-agent engineering workflow and modular documentation ([`docs/teams.md`](docs/teams.md), [`docs/process.md`](docs/process.md), [`docs/architecture.md`](docs/architecture.md), [`docs/project-roadmap.md`](docs/project-roadmap.md)).
+   - Established public issue tracking covering Project 1 deliverables ([GitHub Issues #1–#5](https://github.com/LE0ST/tasklane/issues)).
 
 ---
 
@@ -42,16 +49,18 @@ graph TD
 
     subgraph Render Cloud Platform
         subgraph Render Web Service - Docker Multi-Stage
-            FastAPI[FastAPI Backend :10000]
+            FastAPI[FastAPI Backend :8000 / Dynamic :10000]
             Static[Mounted React 19 SPA Dist]
             FastAPI --- Static
         end
+    end
 
-        subgraph Render Managed Database
-            PG[(PostgreSQL 16 Database)]
-        end
+    subgraph Active Production Database: Neon
+        NeonPG[(Neon PostgreSQL 16<br/>Project: tasklane<br/>Branch: import<br/>DB: neondb)]
+    end
 
-        FastAPI -->|Internal DATABASE_URL<br/>Alembic Migrations on Lifespan| PG
+    subgraph Former Temporary Database: Render
+        RenderPG[(Render PostgreSQL 16<br/>tasklane-db<br/>Status: Temporary Reference / Expiring Oct 24, 2026)]
     end
 
     subgraph CI/CD Pipeline - GitHub Actions
@@ -66,6 +75,7 @@ graph TD
     end
 
     Browser -->|HTTPS :443| FastAPI
+    FastAPI -->|Protected DATABASE_URL (SSL)<br/>Alembic Migrations on Lifespan| NeonPG
 ```
 
 ---
@@ -76,11 +86,12 @@ graph TD
 |---|---|---|
 | **Frontend** | React 19, Vite 6, CSS Modules | Responsive 5-column Kanban board, live filters, modal dialogs |
 | **Backend** | FastAPI, Uvicorn, Pydantic v2 | RESTful API, input validation, static file serving, lifespan hooks |
-| **Database & ORM** | PostgreSQL 16, SQLAlchemy 2.0, Alembic | Relational data persistence, schema migrations (`1ea1353bfe87`) |
+| **Database & ORM** | Neon PostgreSQL 16 (`import` branch), SQLAlchemy 2.0, Alembic | Active verified serverless persistence, schema migrations (`1ea1353bfe87`) |
+| **Former Database** | Render PostgreSQL 16 (`tasklane-db`) | Temporary reference source (expiring October 24, 2026) |
 | **Containerization** | Docker, Multi-stage builds, Docker Compose | Node 20 builder + Python 3.11 slim runtime, pinned `uv:0.12.18` |
 | **Testing** | `pytest`, `httpx`, `@playwright/test` | 14 API/unit tests, 5 PostgreSQL integration tests, 9 E2E browser tests |
 | **CI/CD** | GitHub Actions | Automated builds, migrations, smoke checks, Playwright E2E |
-| **Cloud Hosting** | Render | Docker Web Service + Render Managed PostgreSQL |
+| **Cloud Hosting** | Render Web Service + Neon PostgreSQL | Docker Web Service + Serverless PostgreSQL 16 |
 
 ---
 
@@ -115,7 +126,7 @@ tasklane/
 │   │   ├── test_api.py            # 14 unit and API route tests
 │   │   └── test_postgres_integration.py # 5 PostgreSQL integration tests
 │   ├── alembic.ini                # Alembic CLI configuration
-│   ├── database.py                # Database connection, pooling, URL normalization
+│   ├── database.py                # Database connection, engine setup, URL normalization
 │   ├── main.py                    # FastAPI entrypoint, lifespan migrations, static mounts
 │   ├── models.py                  # SQLAlchemy Task ORM model
 │   ├── pyproject.toml             # uv dependencies and pytest markers
@@ -235,7 +246,7 @@ npm run test:e2e
 
 ## Continuous Integration & Deployment (GitHub Actions)
 
-TaskLane uses a 3-stage GitHub Actions workflow ([`.github/workflows/ci.yml`](file:///g:/PYTHON/tasklane/.github/workflows/ci.yml)) running on pushes and pull requests to `main`:
+TaskLane uses a 3-stage GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) running on pushes and pull requests to `main`:
 
 1. **`frontend-build`**:
    - Compiles React production bundle with Vite.
@@ -253,22 +264,46 @@ TaskLane uses a 3-stage GitHub Actions workflow ([`.github/workflows/ci.yml`](fi
 
 ---
 
-## Cloud Deployment (Render)
+## Cloud Deployment (Render & Neon)
 
-TaskLane is publicly deployed on **Render**:
+TaskLane is publicly deployed on **Render** with persistent serverless storage on **Neon**:
 - **Application URL**: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - **Deployment Mode**: Render Web Service (Docker Runtime) connected directly to `LE0ST/tasklane` (`main` branch).
-- **Database**: Dedicated Render Managed PostgreSQL 16 database (`tasklane-db`) in the same region.
-- **Internal Networking**: Web Service communicates with PostgreSQL over Render's private internal network via `DATABASE_URL` (`postgres://...`).
+- **Active Production Database**: **Neon Serverless PostgreSQL 16** (`tasklane` project, **`import`** branch, `neondb` database).
+- **Former Source Database**: Render Managed PostgreSQL 16 (`tasklane-db`) served only as a temporary reference source for migration verification and is subject to expiration on October 24, 2026.
+- **Production Migration Verification**: Confirmed live — new tasks are stored in Neon `neondb` and absent from the old Render database.
+- **Secure Networking**: Web Service communicates with Neon over SSL via a protected `DATABASE_URL` environment variable.
 - **Automatic Migrations**: Alembic migrations run automatically on container startup inside the FastAPI lifespan handler.
 - **Graceful Shutdown**: The Dockerfile entrypoint uses `exec uvicorn` to receive POSIX `SIGTERM` signals directly from Render.
 
-### Free-Tier Limitations & Operational Considerations
+### Operational Considerations & Continuity
 - **Sleep on Inactivity**: Free Web Services spin down after **15 minutes** of idle time. The first subsequent request triggers a cold start taking **50 to 60 seconds**.
 - **Instance Hours**: 750 free instance hours per month pooled across the workspace.
-- **PostgreSQL Expiration**: Render Free PostgreSQL instances expire **30 days** after creation, with a short upgrade grace period before permanent deletion.
-- **No Managed Backups**: The Free database tier does not include automated snapshots or point-in-time restore.
+- **Database Continuity**: Neon Serverless PostgreSQL removes Render Free's fixed 30-day expiration schedule, mitigating the imminent October 24 database shutdown risk for project submission and peer review (cloud free-tier services remain subject to standard platform quotas and idle behavior).
 - **Public Demonstration Disclaimer**: This deployment is an unauthenticated educational demonstration. Do not submit sensitive, personal, or confidential information.
+
+---
+
+## Project 1 Modular Documentation & Public Issue Tracker
+
+TaskLane's AI-assisted development workflow for Project 1 is fully documented across modular specifications:
+
+| Resource | Link | Summary |
+|:---|:---|:---|
+| **Agent Entry Point** | [`AGENTS.md`](AGENTS.md) | Central entry point and operational manual for development agents |
+| **Agent Team Specification** | [`docs/teams.md`](docs/teams.md) | Agent roster (Luna, Flash, Sol, Astra, Argon, Maintainer), RACI matrix, and boundaries |
+| **Engineering Process** | [`docs/process.md`](docs/process.md) | The 9-stage delivery lifecycle, review handoffs, and no-fabrication policy |
+| **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete system topology, container layers, and Neon database integration |
+| **Project Roadmap** | [`docs/project-roadmap.md`](docs/project-roadmap.md) | Milestones, rubric criteria mapping, and tracking of Issues #1–#5 |
+| **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical acceptance criteria (AC-1..AC-10) and validation rules |
+| **OpenAPI Specification** | [`openapi.yaml`](openapi.yaml) | OpenAPI 3.1 REST API contract |
+
+### Public GitHub Issues (Project 1)
+- [Issue #1: Define agent team, public tracking, and modular project context](https://github.com/LE0ST/tasklane/issues/1)
+- [Issue #2: Instrument TaskLane task workflows with correlated telemetry](https://github.com/LE0ST/tasklane/issues/2)
+- [Issue #3: Add a real user-impact alert and reproducible incident drill](https://github.com/LE0ST/tasklane/issues/3)
+- [Issue #4: Implement bounded on-call responder and prove controlled remediation](https://github.com/LE0ST/tasklane/issues/4)
+- [Issue #5: Verify CI/CD, Neon persistence, rollback and final peer-review evidence](https://github.com/LE0ST/tasklane/issues/5)
 
 ---
 
@@ -287,4 +322,4 @@ Render will immediately redirect traffic to the previous immutable container ima
 ### 2. Database Recovery Considerations
 - **Avoid Blind Downgrades**: Executing `alembic downgrade -1` is not a generic safe recovery tool in production, as dropping columns or tables can cause irreversible data loss.
 - **Additive Migrations**: Follow the expand-contract pattern for schema changes. When repairing schema issues, deploy a forward-fixing Alembic migration rather than a downgrade.
-- **Logical Backups**: For critical state preservation, generate manual SQL dumps using `pg_dump` via the external connection string prior to running major migrations.
+- **Logical Backups (Operational Guidance)**: Prior to major production schema migrations, operators should generate manual SQL dumps using `pg_dump` via the external connection string to establish point-in-time recovery points (no independent static backup is claimed unless explicitly taken and verified).
