@@ -56,6 +56,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Explicit opt-in, safe no-op if optional SDK is not installed.
+from telemetry import enable_telemetry
+enable_telemetry(app)
+
 # Enable CORS for development frontend
 app.add_middleware(
     CORSMiddleware,
