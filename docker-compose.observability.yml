@@ -5,6 +5,7 @@ services:
       context: .
       dockerfile: Dockerfile.observability
     image: tasklane:otel
+    mem_limit: 384m
     environment:
       TASKLANE_OTEL_ENABLED: "true"
       TASKLANE_OTEL_ENDPOINT: http://otel-collector:4318
@@ -15,6 +16,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.132.0
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    mem_limit: 320m
     volumes:
       - ./observability/collector.yml:/etc/otelcol-contrib/config.yaml:ro
     depends_on: [prometheus, loki, tempo]
@@ -22,6 +24,8 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.5.0
+    ports: ["127.0.0.1:9090:9090"]
+    mem_limit: 384m
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=24h"]
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -29,6 +33,8 @@ services:
 
   loki:
     image: grafana/loki:3.5.3
+    ports: ["127.0.0.1:3100:3100"]
+    mem_limit: 512m
     command: ["-config.file=/etc/loki/local-config.yaml"]
     volumes:
       - ./observability/loki.yml:/etc/loki/local-config.yaml:ro
@@ -36,6 +42,8 @@ services:
 
   tempo:
     image: grafana/tempo:2.8.2
+    ports: ["127.0.0.1:3200:3200"]
+    mem_limit: 384m
     command: ["-config.file=/etc/tempo/config.yaml"]
     volumes:
       - ./observability/tempo.yml:/etc/tempo/config.yaml:ro
@@ -43,6 +51,7 @@ services:
 
   grafana:
     image: grafana/grafana:12.1.1
+    mem_limit: 512m
     ports: ["127.0.0.1:3000:3000"]
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
