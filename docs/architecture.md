@@ -58,12 +58,12 @@ graph TD
 - **Project Name:** `tasklane`
 - **Active Branch:** `import` *(Notice: The active production database resides on the `import` branch, NOT the default `production` branch)*
 - **Database Name:** `neondb`
-- **Engine Version:** PostgreSQL 16.4 (SSL required)
+- **Engine Version:** PostgreSQL 16 (SSL required)
 - **Connectivity:** Connects over SSL using a protected `DATABASE_URL` environment variable configured in Render's dashboard.
 - **Migration & Verification Status:**
   - Production data and schema were migrated from Render's initial database into Neon's `import` branch.
   - The migration was verified live: newly created tasks persist in Neon `neondb` and are absent from the former Render database.
-  - Neon provides automated serverless storage and scaling without the 30-day expiration timer of Render's free database tier, ensuring full operational availability throughout project peer review.
+  - Neon removes Render Free's fixed 30-day expiration schedule, mitigating the risk of database shutdown during project submission and peer evaluation (cloud resources remain subject to standard platform service quotas and cold-start sleep behavior).
 
 ### 2.3 Former Source Database (Render Managed PostgreSQL)
 - **Service Name:** `tasklane-db`

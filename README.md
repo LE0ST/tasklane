@@ -75,7 +75,7 @@ graph TD
     end
 
     Browser -->|HTTPS :443| FastAPI
-    FastAPI -->|DATABASE_URL SSL Pooler<br/>Alembic Migrations on Lifespan| NeonPG
+    FastAPI -->|Protected DATABASE_URL (SSL)<br/>Alembic Migrations on Lifespan| NeonPG
 ```
 
 ---
@@ -126,7 +126,7 @@ tasklane/
 │   │   ├── test_api.py            # 14 unit and API route tests
 │   │   └── test_postgres_integration.py # 5 PostgreSQL integration tests
 │   ├── alembic.ini                # Alembic CLI configuration
-│   ├── database.py                # Database connection, pooling, URL normalization
+│   ├── database.py                # Database connection, engine setup, URL normalization
 │   ├── main.py                    # FastAPI entrypoint, lifespan migrations, static mounts
 │   ├── models.py                  # SQLAlchemy Task ORM model
 │   ├── pyproject.toml             # uv dependencies and pytest markers
@@ -272,14 +272,14 @@ TaskLane is publicly deployed on **Render** with persistent serverless storage o
 - **Active Production Database**: **Neon Serverless PostgreSQL 16** (`tasklane` project, **`import`** branch, `neondb` database).
 - **Former Source Database**: Render Managed PostgreSQL 16 (`tasklane-db`) served only as a temporary reference source for migration verification and is subject to expiration on October 24, 2026.
 - **Production Migration Verification**: Confirmed live — new tasks are stored in Neon `neondb` and absent from the old Render database.
-- **Secure Networking**: Web Service communicates with Neon over pooled SSL connections via `DATABASE_URL`.
+- **Secure Networking**: Web Service communicates with Neon over SSL via a protected `DATABASE_URL` environment variable.
 - **Automatic Migrations**: Alembic migrations run automatically on container startup inside the FastAPI lifespan handler.
 - **Graceful Shutdown**: The Dockerfile entrypoint uses `exec uvicorn` to receive POSIX `SIGTERM` signals directly from Render.
 
 ### Operational Considerations & Continuity
 - **Sleep on Inactivity**: Free Web Services spin down after **15 minutes** of idle time. The first subsequent request triggers a cold start taking **50 to 60 seconds**.
 - **Instance Hours**: 750 free instance hours per month pooled across the workspace.
-- **Database Continuity**: Neon Serverless PostgreSQL eliminates the 30-day expiration timer of Render's free tier, ensuring full database availability and persistence throughout project submission and peer review.
+- **Database Continuity**: Neon Serverless PostgreSQL removes Render Free's fixed 30-day expiration schedule, mitigating the imminent October 24 database shutdown risk for project submission and peer review (cloud free-tier services remain subject to standard platform quotas and idle behavior).
 - **Public Demonstration Disclaimer**: This deployment is an unauthenticated educational demonstration. Do not submit sensitive, personal, or confidential information.
 
 ---
