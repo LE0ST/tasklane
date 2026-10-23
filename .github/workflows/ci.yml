@@ -194,3 +194,24 @@ jobs:
       - name: Teardown Docker Compose
         if: always()
         run: docker compose down -v
+
+  observability-smoke:
+    name: OpenTelemetry Local Stack & Correlation
+    runs-on: ubuntu-latest
+    needs: [backend-tests]
+    timeout-minutes: 18
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Build base TaskLane image
+        run: docker build -t tasklane:hw3 .
+      - name: Start optional observability stack
+        run: docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d
+      - name: Verify local metrics, logs and trace correlation
+        run: python3 observability/smoke.py
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.observability.yml logs --tail=120
+      - name: Teardown isolated stack
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
