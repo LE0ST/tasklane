@@ -15,15 +15,15 @@ gantt
     title Project 1 Implementation Timeline
     dateFormat YYYY-MM-DD
     section Phase 1: Team & Specs
-    Issue #1: Agent Team & Modular Docs       :done,    des1, 2026-10-23, 2026-10-23
+    Issue #1: Agent Team & Modular Docs (Draft PR #6)  :active,  des1, 2026-10-23, 2026-10-24
     section Phase 2: Telemetry
-    Issue #2: OpenTelemetry Instrumentation   :active,  des2, 2026-10-23, 2026-10-24
+    Issue #2: OpenTelemetry Instrumentation            :         des2, 2026-10-24, 2026-10-24
     section Phase 3: Alerting
-    Issue #3: User-Impact Alert & Drill       :         des3, 2026-10-24, 2026-10-25
+    Issue #3: User-Impact Alert & Drill                :         des3, 2026-10-24, 2026-10-25
     section Phase 4: SRE Automation
-    Issue #4: Bounded On-Call Responder       :         des4, 2026-10-25, 2026-10-25
+    Issue #4: Bounded On-Call Responder                :         des4, 2026-10-25, 2026-10-25
     section Phase 5: Submission Pack
-    Issue #5: End-to-End Verification & Audit :         des5, 2026-10-25, 2026-10-26
+    Issue #5: End-to-End Verification & Audit          :         des5, 2026-10-25, 2026-10-26
 ```
 
 ---
@@ -31,9 +31,9 @@ gantt
 ## 2. Issue Mapping to Official Rubric Criteria
 
 ### [Issue #1: Define agent team, public tracking, and modular project context](https://github.com/LE0ST/tasklane/issues/1)
-- **Status:** **IN PROGRESS (Current Phase)**
+- **Status:** **IN PROGRESS (Draft PR #6 open; resolving QA findings)**
 - **Lead Agent:** Flash 3.8 High (Implementation) & GPT-6 Luna (Tech Lead)
-- **Assigned Reviewers (Pending Independent Review):** GPT-6.1 Sol (QA/Security), Gemini 4 Argon (Rubric Audit)
+- **Review Status:** Independent QA review conducted by GPT-6.1 Sol (Request Changes on Draft PR #6 with 9 findings); Flash 3.8 High resolving findings; awaiting QA re-review and Maintainer approval.
 - **Governance Gate:** Human Maintainer (`LE0ST`)
 - **Rubric Criteria Targeted:**
   - **Product Specification (2 pts):** Specification exists, public GitHub Issues tracker established, tasks define testable acceptance criteria.
@@ -109,13 +109,16 @@ gantt
 
 ---
 
-## 3. Rubric Score Progression
+## 3. Rubric Score Progression & Provisional Target Estimates
 
-| Milestone | Issues Addressed | Criteria Satisfied | Estimated Cumulative Score |
+> [!IMPORTANT]
+> The figures below represent **provisional target estimates** conditioned upon successful implementation, independent QA approval, passing CI, and maintainer merge for each milestone. They are internal planning targets and do not represent points officially awarded by course peer reviewers or grading staff.
+
+| Milestone | Issues Addressed | Target Criteria Scope | Provisional Target Estimate |
 |:---|:---|:---|:---:|
-| **Baseline (Phase 0)** | Prior Homework 2 & 3 | Problem Description (2), Application (2), Testing (2), Containerization (2), Deployment (2), CI/CD (2), Product Spec (1), Context (1) | **14 / 24 pts** |
-| **Milestone 1** | Issue #1 | + Product Specification (2/2), + Agent Team (2/2), + Context Management (2/2) | **18 / 24 pts** |
-| **Milestone 2** | Issue #2 | + Observability (2/2) | **20 / 24 pts** |
-| **Milestone 3** | Issue #3 | + Alerting on User Impact (1/1) | **21 / 24 pts** |
-| **Milestone 4** | Issue #4 | + On-Call Agent (2/2) | **23 / 24 pts** |
-| **Milestone 5** | Issue #5 | Verification, Rollback, Peer Review Package | **23–24 / 24 pts** |
+| **Baseline (Phase 0)** | Prior Homework 2 & 3 | Problem Description (2), Application (2), Testing (2), Containerization (2), Deployment (2), CI/CD (2), Product Spec (1), Context (1) | **14 / 24 pts** (Baseline) |
+| **Milestone 1** | Issue #1 *(In Progress, PR #6)* | Target: Product Specification (2/2), Agent Team (2/2), Context Management (2/2) | **18 / 24 pts** *(Provisional Target)* |
+| **Milestone 2** | Issue #2 *(Planned)* | Target: Observability (2/2) | **20 / 24 pts** *(Provisional Target)* |
+| **Milestone 3** | Issue #3 *(Planned)* | Target: Alerting on User Impact (1/1) | **21 / 24 pts** *(Provisional Target)* |
+| **Milestone 4** | Issue #4 *(Planned)* | Target: On-Call Agent (2/2) | **23 / 24 pts** *(Provisional Target)* |
+| **Milestone 5** | Issue #5 *(Planned)* | Target: Verification, Rollback, Peer Review Evidence Pack | **23–24 / 24 pts** *(Provisional Target)* |

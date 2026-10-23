@@ -246,7 +246,7 @@ npm run test:e2e
 
 ## Continuous Integration & Deployment (GitHub Actions)
 
-TaskLane uses a 3-stage GitHub Actions workflow ([`.github/workflows/ci.yml`](file:///g:/PYTHON/tasklane/.github/workflows/ci.yml)) running on pushes and pull requests to `main`:
+TaskLane uses a 3-stage GitHub Actions workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) running on pushes and pull requests to `main`:
 
 1. **`frontend-build`**:
    - Compiles React production bundle with Vite.

@@ -37,7 +37,7 @@ graph TD
     end
 
     Browser -->|HTTPS :443| FastAPI
-    FastAPI -->|Internal DATABASE_URL (Pooler SSL)<br/>Alembic Migrations on Lifespan| NeonPG
+    FastAPI -->|Protected DATABASE_URL (SSL)<br/>Alembic Migrations on Lifespan| NeonPG
 ```
 
 ---
@@ -59,9 +59,10 @@ graph TD
 - **Active Branch:** `import` *(Notice: The active production database resides on the `import` branch, NOT the default `production` branch)*
 - **Database Name:** `neondb`
 - **Engine Version:** PostgreSQL 16.4 (SSL required)
+- **Connectivity:** Connects over SSL using a protected `DATABASE_URL` environment variable configured in Render's dashboard.
 - **Migration & Verification Status:**
   - Production data and schema were migrated from Render's initial database into Neon's `import` branch.
-  - The migration was verified live: newly created tasks persist in Neon `neondb` and are absent from the frozen Render database.
+  - The migration was verified live: newly created tasks persist in Neon `neondb` and are absent from the former Render database.
   - Neon provides automated serverless storage and scaling without the 30-day expiration timer of Render's free database tier, ensuring full operational availability throughout project peer review.
 
 ### 2.3 Former Source Database (Render Managed PostgreSQL)
@@ -80,7 +81,7 @@ graph TD
   - Task titles: 1–120 characters, stripped, non-empty.
   - Allowed statuses: `backlog`, `todo`, `in_progress`, `review`, `done`.
   - Allowed priorities: `low`, `medium`, `high`, `urgent`.
-- **Database ORM:** SQLAlchemy 2.0 with declarative mapping (`backend/models.py`). Connection pooling with `pool_pre_ping=True` and connection recycling (300s) to handle serverless connection drops seamlessly.
+- **Database ORM:** SQLAlchemy 2.0 with declarative mapping (`backend/models.py`). Connection engine configured with `pool_pre_ping=True` to verify connection liveness prior to checkout.
 - **Schema Migrations:** Alembic (`backend/alembic/`) with migration version `1ea1353bfe87_create_tasks_table.py`.
 
 ### 3.2 Frontend Application Layer (`frontend/`)
@@ -96,16 +97,26 @@ graph TD
 
 ## 4. API Design & OpenAPI Contract
 
-The complete API surface adheres to the formal OpenAPI 3.1 contract defined in [`openapi.yaml`](file:///G:/PYTHON/tasklane/openapi.yaml):
+The application API surface comprises the formal OpenAPI 3.1 task contract alongside runtime health probe endpoints:
+
+### 4.1 OpenAPI Contract (`openapi.yaml`)
+The core task management endpoints are formally specified in [`openapi.yaml`](../openapi.yaml):
 
 | HTTP Method | Route | Description | Request Body | Response Codes |
 |:---|:---|:---|:---|:---|
-| **GET** | `/health` | Liveness and health probe | None | `200 OK` (`{"status":"healthy"}`) |
 | **GET** | `/api/tasks` | List tasks (newest first) | Query: `status`, `priority`, `search` | `200 OK` (`List[TaskResponse]`) |
 | **POST** | `/api/tasks` | Create new task (enforced in `backlog`) | `{title, description?, priority?}` | `201 Created`, `422 Unprocessable Entity` |
-| **GET** | `/api/tasks/{id}` | Retrieve task detail by ID | None | `200 OK`, `404 Not Found` |
-| **PATCH** | `/api/tasks/{id}` | Update task fields / transition status | `{title?, description?, status?, priority?}` | `200 OK`, `404 Not Found`, `422 Unprocessable` |
-| **DELETE** | `/api/tasks/{id}` | Remove task permanently | None | `204 No Content`, `404 Not Found` |
+| **GET** | `/api/tasks/{task_id}` | Retrieve task detail by ID | None | `200 OK`, `404 Not Found` |
+| **PATCH** | `/api/tasks/{task_id}` | Update task fields / transition status | `{title?, description?, status?, priority?}` | `200 OK`, `404 Not Found`, `422 Unprocessable` |
+| **DELETE** | `/api/tasks/{task_id}` | Remove task permanently | None | `204 No Content`, `404 Not Found` |
+
+### 4.2 Runtime Health Endpoints (FastAPI)
+For cloud platforms and container orchestrators, FastAPI additionally exposes unauthenticated runtime liveness probes (implemented in `backend/main.py`):
+
+| HTTP Method | Route | Description | Response Body |
+|:---|:---|:---|:---|
+| **GET** | `/health` | Cloud/container health probe | `{"status":"healthy"}` |
+| **GET** | `/api/health` | API alias health probe | `{"status":"healthy"}` |
 
 ### Core Contract Constraints
 1. **Creation Rule:** Tasks created via `POST /api/tasks` are always placed in `backlog`. Client-supplied `status` values on creation are rejected with `HTTP 422`.

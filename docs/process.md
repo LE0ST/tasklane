@@ -4,56 +4,53 @@ This document establishes the verified software delivery lifecycle, agent handof
 
 ---
 
-## 1. The 9-Stage Delivery Lifecycle
+## 1. The Verified 13-Stage Delivery Lifecycle
 
-Every modification to TaskLane flows through a deterministic, 9-stage engineering pipeline:
+Every feature or operational enhancement to TaskLane flows through a deterministic, 13-stage engineering pipeline reflecting our verified workflow:
 
 ```mermaid
 flowchart TD
-    S1["1. Public GitHub Issue<br/>(Defined by GPT-6 Luna)"] --> S2["2. Acceptance Criteria Baseline<br/>(Linked to Course Rubric)"]
-    S2 --> S3["3. Isolated Feature Branch<br/>(project1/<feature-name>)"]
-    S3 --> S4["4. Implementation<br/>(Flash 3.8 High)"]
-    S4 --> S5["5. Local Automated Testing<br/>(pytest + Playwright + lint)"]
-    S5 --> S6["6. Independent QA & Security Review<br/>(GPT-6.1 Sol & Gemini 4 Argon)"]
-    S6 --> S7["7. Pull Request & Evidence Pack<br/>(Diffs, Test logs, Checklist)"]
-    S7 --> S8["8. Human Maintainer Approval<br/>(LE0ST Manual Review)"]
-    S8 --> S9["9. Merge to main & Live Verification<br/>(CI/CD -> Render/Neon Deployment)"]
+    S1["1. Product Specification<br/>(_docs/specs.md)"] --> S2["2. Public GitHub Issue<br/>(Defined by GPT-6 Luna)"]
+    S2 --> S3["3. Acceptance Criteria Baseline<br/>(Linked to Course Rubric)"]
+    S3 --> S4["4. Isolated Feature Branch<br/>(project1/<feature-name>)"]
+    S4 --> S5["5. Implementation<br/>(Flash 3.8 High)"]
+    S5 --> S6["6. Local Automated Testing<br/>(Unit pytest + Frontend build)"]
+    S6 --> S7["7. Draft Pull Request<br/>(Opened targeting main)"]
+    S7 --> S8["8. Independent QA Review<br/>(Audit by GPT-6.1 Sol)"]
+    S8 --> S9["9. Corrections & Refinements<br/>(Flash 3.8 High resolves findings)"]
+    S9 --> S10["10. CI Automated Verification<br/>(GitHub Actions: Tests, Compose, E2E)"]
+    S10 --> S11["11. Human Maintainer Approval<br/>(LE0ST Review Gate)"]
+    S11 --> S12["12. Merge to main<br/>(Executed by Maintainer)"]
+    S12 --> S13["13. Deployment Verification<br/>(Render / Neon Smoke Test)"]
 ```
 
-### Stage 1: Public GitHub Issue Definition
+### Stage 1: Product Specification Baseline
+- The canonical functional requirements and data models are defined in [`_docs/specs.md`](../_docs/specs.md). All new work must maintain compatibility with these specifications.
+
+### Stage 2: Public GitHub Issue Definition
 - **Owner:** GPT-6 Luna (Product & Tech Lead)
-- All new tasks must be publicly tracked in the [TaskLane GitHub Issues tracker](https://github.com/LE0ST/tasklane/issues).
-- Issues #1 through #5 govern Project 1 deliverables:
-  - **Issue #1:** Agent team, public tracking, and modular project context.
-  - **Issue #2:** Telemetry instrumentation (OpenTelemetry metrics, logs, traces).
-  - **Issue #3:** Real user-impact alert and reproducible incident drill.
-  - **Issue #4:** Bounded on-call responder and controlled remediation.
-  - **Issue #5:** End-to-end verification, Neon persistence, and peer-review evidence pack.
+- Every initiative is tracked in the public [TaskLane GitHub Issues tracker](https://github.com/LE0ST/tasklane/issues) (Issues #1 through #5 govern Project 1).
 
-### Stage 2: Acceptance Criteria Formulation
-- Each issue contains an explicit checklist of testable Acceptance Criteria (AC).
-- ACs cross-reference the official 12-criterion course rubric and existing technical specifications (`_docs/specs.md`).
-- **No Scope Creep:** Requirements not specified in the active issue are forbidden from implementation.
+### Stage 3: Acceptance Criteria Formulation
+- Each issue specifies unambiguous, testable Acceptance Criteria (AC) mapped directly to official course rubric criteria.
 
-### Stage 3: Isolated Feature Branching
+### Stage 4: Isolated Feature Branching
 - **Owner:** Flash 3.8 High (Implementation Engineer)
-- Feature branches are created exclusively from an up-to-date `main` branch:
+- Work branches exclusively from up-to-date `main`:
   ```bash
   git checkout main
   git pull origin main
   git checkout -b project1/<feature-name>
   ```
-- Direct commits or pushes to `main` are strictly prohibited by documented project policy (agents must never push directly to `main`).
+- Direct commits or pushes to `main` are strictly prohibited by project engineering policy.
 
-### Stage 4: Implementation Discipline
+### Stage 5: Implementation Discipline
 - **Owner:** Flash 3.8 High
-- Code and documentation edits must strictly address the active issue's acceptance criteria.
-- **Preservation Rule:** Existing core features, database models, schemas, and Alembic migrations must remain intact to prevent regressions.
-- **Language Standard:** All source code, docstrings, variable names, documentation, commit messages, and UI text must be in **English**.
+- Code and documentation edits must strictly address the active issue's acceptance criteria without scope creep or breaking existing passing features.
 
-### Stage 5: Automated Verification
-- Prior to submitting work for review, the implementation engineer must run:
-  1. **Backend Unit/API Tests:**
+### Stage 6: Local Automated Testing & Verification
+- Prior to opening a PR, the implementation engineer executes targeted local verification:
+  1. **Backend Unit & API Tests:**
      ```bash
      cd backend && uv run pytest -v -m "not integration"
      ```
@@ -70,34 +67,41 @@ flowchart TD
      git status --short
      ```
 
-### Stage 6: Independent QA & Security Review
+### Stage 7: Draft Pull Request Submission
+- The feature branch is pushed to `origin`, and a **Draft Pull Request** is opened targeting `main`.
+- The PR description references the active issue (`Resolves #1`), details the changes, and provides local test execution evidence.
+
+### Stage 8: Independent QA & Security Review
 - **Owner:** GPT-6.1 Sol (QA/Security) and Gemini 4 Argon (External Architecture)
-- The review examines:
-  - **Correctness:** Did the change satisfy every acceptance criterion?
-  - **Regressions:** Are existing API contracts or frontend workflows impacted?
-  - **Security & Secrets:** Are database passwords, API tokens, or internal endpoints exposed?
-  - **Rubric Alignment:** Does the deliverable satisfy the target points under the official rubric?
-- If deficiencies are identified, the reviewer issues specific change requests back to Flash 3.8 High.
+- Sol conducts an independent read-only audit of the Draft PR diff, checking:
+  - Acceptance criteria fulfillment.
+  - Absence of credentials, secret tokens, or hardcoded sensitive connection strings.
+  - Documentation portability, technical accuracy, and safety constraints.
+  - Rubric alignment against the official course grading criteria.
+- Findings are reported with specific verdicts (*Approve* or *Request Changes*).
 
-### Stage 7: Pull Request & Evidence Pack
-- When all criteria pass, a Pull Request is opened targeting `main`.
-- The PR description must contain:
-  - Reference to the target GitHub Issue (e.g., `Resolves #1`).
-  - Summary of modified and created files.
-  - Test execution logs (e.g., pytest summary, build outputs).
-  - Explicit confirmation that no secrets or breaking changes were introduced.
+### Stage 9: Corrections & Refinements
+- **Owner:** Flash 3.8 High
+- If findings or change requests are identified during QA review, Flash resolves them directly within the existing feature branch.
+- Changes are verified locally and pushed to update the Draft PR automatically.
 
-### Stage 8: Human Maintainer Approval Gate
+### Stage 10: CI Automated Verification (GitHub Actions)
+- On pull request synchronization, the full GitHub Actions workflow ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) executes:
+  1. `frontend-build`: Compiles production assets with Vite.
+  2. `backend-tests`: Provisions a fresh `postgres:16-alpine` service, runs Alembic migrations, and executes all 19 pytest tests (including PostgreSQL integration tests).
+  3. `docker-e2e-smoke`: Builds the multi-stage Docker image, boots Docker Compose, runs HTTP smoke checks, and executes Playwright E2E browser tests in headless Chromium.
+
+### Stage 11: Human Maintainer Approval Gate
 - **Owner:** Human Maintainer (`LE0ST`)
-- The human maintainer conducts a final review of the PR diff on GitHub.
-- Merges to `main` require explicit human maintainer approval by project policy. No automated process or agent may self-approve merges or bypass governance gates. Note that project policy governs agent operating rules, while any GitHub server-side branch protection settings are managed independently by the maintainer.
+- The maintainer inspects the resolved PR, review verdicts, and CI checks. Merging requires explicit maintainer authorization.
 
-### Stage 9: Merge & Production Smoke Verification
-- Following merge:
-  1. GitHub Actions CI pipeline runs builds, tests, Compose smoke checks, and Playwright E2E scenarios.
-  2. Render Web Service detects the push to `main` and initiates automatic container deployment.
-  3. FastAPI lifespan executes `alembic upgrade head` against the live Neon PostgreSQL database.
-  4. The maintainer verifies public health at `https://tasklane-app.onrender.com/health` and confirms data persistence.
+### Stage 12: Merge to `main`
+- The human maintainer executes the merge of the approved PR into `main`.
+
+### Stage 13: Deployment Verification
+- Render automatically builds and deploys the new container from `main`.
+- FastAPI lifespan runs `alembic upgrade head` against the live Neon PostgreSQL database.
+- Production health is verified at `https://tasklane-app.onrender.com/health`.
 
 ---
 

@@ -22,12 +22,12 @@ All agents must consult the appropriate modular documentation before planning or
 
 | Document | Path | Purpose |
 |:---|:---|:---|
-| **Product Specification** | [`_docs/specs.md`](file:///G:/PYTHON/tasklane/_docs/specs.md) | Canonical functional requirements, data models, validation rules, and acceptance criteria (AC-1..AC-10). |
-| **Agent Team & Roles** | [`docs/teams.md`](file:///G:/PYTHON/tasklane/docs/teams.md) | Agent roster (Luna, Flash, Sol, Astra, Argon, Maintainer), RACI matrix, and write boundaries. |
-| **Engineering Process** | [`docs/process.md`](file:///G:/PYTHON/tasklane/docs/process.md) | The 9-stage issue-driven development lifecycle, test verification, review gates, and no-fabrication policy. |
-| **System Architecture** | [`docs/architecture.md`](file:///G:/PYTHON/tasklane/docs/architecture.md) | Concrete topology, container layers, Neon PostgreSQL 16 integration, and planned telemetry architecture. |
-| **Project Roadmap** | [`docs/project-roadmap.md`](file:///G:/PYTHON/tasklane/docs/project-roadmap.md) | Milestones, scoring criteria mapping, and tracking of GitHub Issues #1–#5. |
-| **OpenAPI Contract** | [`openapi.yaml`](file:///G:/PYTHON/tasklane/openapi.yaml) | Formal OpenAPI 3.1 REST API specification. |
+| **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical functional requirements, data models, validation rules, and acceptance criteria (AC-1..AC-10). |
+| **Agent Team & Roles** | [`docs/teams.md`](docs/teams.md) | Agent roster (Luna, Flash, Sol, Astra, Argon, Maintainer), RACI matrix, and write boundaries. |
+| **Engineering Process** | [`docs/process.md`](docs/process.md) | The verified issue-driven development lifecycle, test verification, review gates, and no-fabrication policy. |
+| **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete topology, container layers, Neon PostgreSQL 16 integration, and planned telemetry architecture. |
+| **Project Roadmap** | [`docs/project-roadmap.md`](docs/project-roadmap.md) | Milestones, scoring criteria mapping, and tracking of GitHub Issues #1–#5. |
+| **OpenAPI Contract** | [`openapi.yaml`](openapi.yaml) | Formal OpenAPI 3.1 REST API specification. |
 
 ---
 
