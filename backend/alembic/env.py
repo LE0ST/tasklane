@@ -17,7 +17,8 @@ config = context.config
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Preserve application telemetry handlers installed before Alembic startup.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Set database URL dynamically if not already provided by config/caller
 current_url = config.get_main_option("sqlalchemy.url")
