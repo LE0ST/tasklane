@@ -10,6 +10,7 @@ API = "http://127.0.0.1:8000"
 PROM = "http://127.0.0.1:9090"
 LOKI = "http://127.0.0.1:3100"
 TEMPO = "http://127.0.0.1:3200"
+GRAFANA = "http://127.0.0.1:3000"
 
 
 def request(url, method="GET", payload=None):
@@ -46,6 +47,14 @@ def main():
 
     eventually(metric_exists, 90)
 
+    # Grafana must expose all provisioned backends, not just start a container.
+    eventually(lambda: request(GRAFANA + "/api/health").get("database") == "ok", 60)
+    sources = eventually(
+        lambda: {entry.get("name") for entry in request(GRAFANA + "/api/datasources")},
+        45,
+    )
+    assert {"Prometheus", "Loki", "Tempo"}.issubset(sources), "Missing Grafana datasource"
+
     def find_log():
         query = urllib.parse.quote('{service_name="tasklane-api"}')
         data = request(LOKI + "/loki/api/v1/query_range?query=" + query + "&limit=100")
@@ -57,6 +66,7 @@ def main():
                 except (TypeError, ValueError):
                     continue
                 if record.get("method") == "PATCH" and record.get("route") == "/api/tasks/{task_id}" and record.get("status_code") == 200:
+                    assert "otel-ci-local" not in line and '"title"' not in line, "Sensitive task content leaked to logs"
                     trace_id = record.get("trace_id")
                     if isinstance(trace_id, str) and len(trace_id) == 32 and trace_id != "0" * 32:
                         return trace_id
@@ -70,6 +80,7 @@ def main():
 
     eventually(trace_exists, 60)
     print("PASS: Task create/patch, request metric, correlated Loki JSON log and Tempo trace.")
+    print("PASS: Grafana provisioned Prometheus/Loki/Tempo datasources and no task title appears in request log.")
     print("Trace ID verified (redacted from CI output).")
 
 
