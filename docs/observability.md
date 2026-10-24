@@ -1,6 +1,6 @@
 # TaskLane — Optional Local OpenTelemetry Demo (Issue #2)
 
-**Status:** Implementation draft; end-to-end Docker evidence is not yet verified. This is not enabled in Render.
+**Status:** Collector → Prometheus/Loki/Tempo correlation was verified end-to-end in [GitHub Actions run 40046821841](https://github.com/LE0ST/tasklane/actions/runs/40046821841), including a real POST/PATCH task journey and matching trace ID. Expanded Grafana provisioning/privacy assertions are undergoing follow-up CI verification. This feature remains **local-only** and is not enabled in Render.
 
 ## Design
 `backend/telemetry.py` is a fail-open, opt-in FastAPI HTTP middleware that records:
@@ -24,27 +24,33 @@ The Grafana UI is available at <http://localhost:3000>. This is a disposable loc
 Trigger local requests:
 
 ```bash
-curl -fsS -X POST http://localhost:8000/api/tasks \
+created="$(curl -fsS -X POST http://localhost:8000/api/tasks \
   -H 'Content-Type: application/json' \
-  -d '{"title":"otel-local-demo","priority":"low"}'
-# Capture the task ID from the response and use it below.
-curl -fsS -X PATCH http://localhost:8000/api/tasks/1 \
+  -d '{"title":"otel-local-demo","priority":"low"}')"
+task_id="$(printf '%s' "$created" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
+curl -fsS -X PATCH "http://localhost:8000/api/tasks/$task_id" \
   -H 'Content-Type: application/json' \
   -d '{"status":"todo"}'
 ```
 
-In Grafana Explore, choose the provisioned Prometheus, Loki and Tempo data sources. Search Prometheus for `tasklane_http_requests_total` (the counter's exported Prometheus name) and `tasklane_http_duration_milliseconds_bucket` (depending on Collector translation). Search Loki by `service_name="tasklane-api"` and inspect JSON log bodies for `trace_id`. Paste a trace ID into Tempo Explore to find its span. **Do not claim these queries are successful until verified in the running local stack**; consult actual scraped metric names if a name differs.
+In Grafana Explore, choose the provisioned Prometheus, Loki and Tempo data sources. Search Prometheus for `tasklane_http_requests_total` (the counter's exported Prometheus name) and `tasklane_http_duration_milliseconds_bucket` (depending on Collector translation). Search Loki by `service_name="tasklane-api"` and inspect JSON log bodies for `trace_id`. Paste a trace ID into Tempo Explore to find its span. The underlying Prometheus request metric, Loki request log and Tempo trace were verified by CI; confirm histogram naming, dashboard navigation, and any derived-field links in the running UI before claiming those manual screenshots as evidence.
 
 Stop and remove local demo:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
+docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 ```
 
+## Verified CI evidence
+- [Run 40046821841](https://github.com/LE0ST/tasklane/actions/runs/40046821841): all four jobs passed, including `OpenTelemetry Local Stack & Correlation`.
+- CI logs state: `PASS: Task create/patch, request metric, correlated Loki JSON log and Tempo trace.`
+- The test performed real local POST and PATCH operations, queried Prometheus and Loki HTTP APIs, retrieved the resulting trace through Tempo, and redacted the trace ID from the public CI output.
+- To reproduce on a local Docker host, run `python3 observability/smoke.py` after all services start. It uses only Python standard-library modules.
+
 ## Limitations / QA checklist
-- End-to-end ingestion and Grafana correlation require a real local Docker run and captured evidence; not demonstrated by source code alone.
-- Cross-signal trace correlation needs careful verification for concurrent requests and error paths.
-- The Collector must be checked for successful exports into Loki's OTLP endpoint and Tempo's HTTP receiver, as well as Prometheus scraping.
-- Verify that Grafana data sources resolve in the running Compose network.
+- The verified CI evidence does **not** yet include manual screenshots from Grafana Explore.
+- Correlation was confirmed for a successful PATCH. Concurrency and error-path correlation still need independent QA review.
+- Collector exports and ingestion succeeded in CI for this single local journey. Future integration changes should preserve the automated smoke gate.
+- Verify that Grafana datasource provisioning and derived Tempo links work in the UI; the follow-up smoke also checks the datasource list.
 - No Render or Neon changes are authorized for Issue #2.
-- Run existing FastAPI, PostgreSQL integration, frontend build and Playwright tests and document actual outcomes.
+- The frontend, backend/PostgreSQL and Docker/Playwright jobs passed in run 40046821841. Recheck the final HEAD commit before merge.
