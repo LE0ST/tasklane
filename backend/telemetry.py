@@ -7,12 +7,13 @@ import time
 logger = logging.getLogger("tasklane.telemetry")
 
 
-def enable_telemetry(app):
+def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_provider=None):
     """Attach telemetry middleware when explicitly enabled; fail open on misconfiguration."""
     if os.getenv("TASKLANE_OTEL_ENABLED", "").lower() not in {"1", "true", "yes"}:
         return False
     try:
         from opentelemetry import trace, metrics
+        from opentelemetry.trace import SpanKind, StatusCode, Status
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -28,60 +29,97 @@ def enable_telemetry(app):
         return False
 
     endpoint = os.getenv("TASKLANE_OTEL_ENDPOINT", "").rstrip("/")
-    if not endpoint or not endpoint.startswith(("http://", "https://")):
-        logger.warning("OpenTelemetry disabled: TASKLANE_OTEL_ENDPOINT is not configured")
-        return False
+    if tracer_provider is None:
+        if not endpoint or not endpoint.startswith(("http://", "https://")):
+            logger.warning("OpenTelemetry disabled: TASKLANE_OTEL_ENDPOINT is not configured")
+            return False
 
     resource = Resource.create({"service.name": "tasklane-api", "deployment.environment": "local"})
-    traces = TracerProvider(resource=resource)
-    traces.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint + "/v1/traces")))
-    trace.set_tracer_provider(traces)
-    reader = PeriodicExportingMetricReader(
-        OTLPMetricExporter(endpoint=endpoint + "/v1/metrics"),
-        export_interval_millis=5000,
-    )
-    metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=[reader]))
-    log_provider = LoggerProvider(resource=resource)
-    log_provider.add_log_record_processor(
-        BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint + "/v1/logs"))
-    )
-    otel_handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+
+    if tracer_provider is None:
+        traces = TracerProvider(resource=resource)
+        traces.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint + "/v1/traces")))
+        trace.set_tracer_provider(traces)
+    else:
+        traces = tracer_provider
+
+    if meter_provider is None:
+        reader = PeriodicExportingMetricReader(
+            OTLPMetricExporter(endpoint=endpoint + "/v1/metrics"),
+            export_interval_millis=5000,
+        )
+        mp = MeterProvider(resource=resource, metric_readers=[reader])
+        metrics.set_meter_provider(mp)
+    else:
+        mp = meter_provider
+
+    if logger_provider is None:
+        lp = LoggerProvider(resource=resource)
+        lp.add_log_record_processor(
+            BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint + "/v1/logs"))
+        )
+    else:
+        lp = logger_provider
+
+    otel_handler = LoggingHandler(level=logging.INFO, logger_provider=lp)
     otel_handler.setFormatter(logging.Formatter("%(message)s"))
-    logger.addHandler(otel_handler)
+    if not any(isinstance(h, LoggingHandler) for h in logger.handlers):
+        logger.addHandler(otel_handler)
     logger.setLevel(logging.INFO)
-    meter = metrics.get_meter("tasklane.http")
+
+    meter = mp.get_meter("tasklane.http")
     count = meter.create_counter("tasklane_http_requests", unit="1")
     duration = meter.create_histogram("tasklane_http_duration", unit="ms")
-    tracer = trace.get_tracer("tasklane.http")
+    tracer = traces.get_tracer("tasklane.http")
 
     @app.middleware("http")
     async def instrument_requests(request, call_next):
         route = request.scope.get("route")
-        # Starlette may populate scope route only after call_next; use only a safe
-        # static match from registered route templates, never raw request URLs.
         method = request.method.upper()
         started = time.perf_counter()
-        with tracer.start_as_current_span("HTTP " + method) as span:
-            status = 500
+        with tracer.start_as_current_span(
+            "HTTP " + method,
+            kind=SpanKind.SERVER,
+            record_exception=False,
+            set_status_on_exception=False,
+        ) as span:
+            status_code = 500
             try:
                 response = await call_next(request)
-                status = response.status_code
+                status_code = response.status_code
                 return response
+            except Exception:
+                status_code = 500
+                span.set_status(Status(StatusCode.ERROR))
+                raise
             finally:
+                if status_code >= 500:
+                    span.set_status(Status(StatusCode.ERROR))
                 route = request.scope.get("route") or route
                 template = getattr(route, "path", None)
                 if template not in {"/api/tasks", "/api/tasks/{task_id}", "/health", "/api/health"}:
                     template = "other"
-                attrs = {"http.request.method": method if method in {"GET","POST","PATCH","DELETE","OPTIONS"} else "OTHER",
-                         "http.route": template, "http.response.status_code": int(status)}
+                safe_method = method if method in {"GET", "POST", "PATCH", "DELETE", "OPTIONS"} else "OTHER"
+                attrs = {
+                    "http.request.method": safe_method,
+                    "http.route": template,
+                    "http.response.status_code": int(status_code),
+                }
                 elapsed = (time.perf_counter() - started) * 1000
                 span.set_attributes(attrs)
                 count.add(1, attrs)
                 duration.record(elapsed, attrs)
                 ctx = span.get_span_context()
-                logger.info(json.dumps({"event":"http_request", "method":attrs["http.request.method"],
-                    "route":template,"status_code":status,
-                    "duration_ms":round(elapsed,2),
-                    "trace_id":format(ctx.trace_id,"032x"),
-                    "span_id":format(ctx.span_id,"016x")}))
+                logger.info(
+                    json.dumps({
+                        "event": "http_request",
+                        "method": safe_method,
+                        "route": template,
+                        "status_code": status_code,
+                        "duration_ms": round(elapsed, 2),
+                        "trace_id": format(ctx.trace_id, "032x"),
+                        "span_id": format(ctx.span_id, "016x"),
+                    })
+                )
+
     return True

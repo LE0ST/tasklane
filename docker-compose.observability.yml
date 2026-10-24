@@ -1,12 +1,22 @@
 # Optional local-only extension. Never use this override for Render production.
+# Requires Docker Compose 2.24.4 or later for the '!override' attribute replacement feature.
 services:
+  postgres:
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tasklane
+
   app:
     build:
       context: .
       dockerfile: Dockerfile.observability
     image: tasklane:otel
     mem_limit: 384m
+    ports: !override
+      - "127.0.0.1:8000:8000"
     environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/tasklane
       TASKLANE_OTEL_ENABLED: "true"
       TASKLANE_OTEL_ENDPOINT: http://otel-collector:4318
     depends_on:
