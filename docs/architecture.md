@@ -125,9 +125,9 @@ For cloud platforms and container orchestrators, FastAPI additionally exposes un
 
 ---
 
-## 5. Telemetry & Observability Architecture (Planned for Issue #2)
+## 5. Telemetry & Observability Architecture (Local Issue #2 Implementation)
 
-Under Project 1 Issue #2, the application architecture will be augmented with OpenTelemetry instrumentation:
+Issue #2 adds an **opt-in, local-only** OpenTelemetry instrumentation pipeline. Render and Neon production remain unchanged. End-to-end local trace/log/metric correlation and Grafana datasource provisioning were verified in [Actions run 40047097348](https://github.com/LE0ST/tasklane/actions/runs/40047097348). See [the demo guide](observability.md) for commands and verification boundaries:
 
 ```mermaid
 graph LR
@@ -159,6 +159,6 @@ graph LR
     end
 ```
 
-- **Metrics:** `http_requests_total` counter tracking method, route, and status code (bounded labels only; no PII or user IDs).
-- **Traces:** Request context propagation correlating endpoint handling and database operations via unique `trace_id`.
-- **Logs:** Structured logs linked to `trace_id` and `span_id`.
+- **Metrics:** `tasklane_http_requests_total` and `tasklane_http_duration` exported counter/histogram; labels are bounded HTTP method, templated route and status code, never task content or raw IDs.
+- **Traces:** FastAPI HTTP request spans correlate with structured application logs using a unique `trace_id`; SQLAlchemy database spans are not currently instrumented.
+- **Logs:** Structured request metadata linked by `trace_id` and `span_id`, with no request bodies, task titles, connection strings or credentials. The incident responder in the diagram remains planned for Issue #4.
