@@ -84,6 +84,14 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
         meter = mp.get_meter("tasklane.http")
         count = meter.create_counter("tasklane_http_requests", unit="1")
         duration = meter.create_histogram("tasklane_http_duration", unit="ms")
+        # The first error must be observable as an increase, not as the first-ever sample.
+        # Precreate only the bounded 503 series in the opt-in local incident environment.
+        if os.getenv("TASKLANE_INCIDENT_DRILL_ENABLED") == "local-only":
+            count.add(0, {
+                "http.request.method": "POST",
+                "http.route": "/api/tasks",
+                "http.response.status_code": 503,
+            })
         tracer = traces.get_tracer("tasklane.http")
 
     except Exception:
