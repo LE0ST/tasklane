@@ -1,0 +1,30 @@
+# Optional local-only on-call responder Compose overlay. Never use in production.
+# Requires Docker Compose 2.24.4 or later.
+name: tasklane-observability
+
+services:
+  grafana:
+    volumes:
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./incident-response/alerting/tasklane-oncall.yml:/etc/grafana/provisioning/alerting/tasklane.yml:ro
+
+  oncall-responder:
+    build:
+      context: .
+      dockerfile: incident-response/Dockerfile
+    container_name: tasklane-oncall-responder
+    ports:
+      - "127.0.0.1:8001:8001"
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      TEMPO_URL: http://tempo:3200
+      ENVIRONMENT: development
+    mem_limit: 128m
+    depends_on:
+      - grafana
+      - prometheus
+      - loki
+      - tempo
+      - alert-sink
+    restart: unless-stopped

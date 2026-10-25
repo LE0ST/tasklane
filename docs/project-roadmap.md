@@ -77,17 +77,20 @@ gantt
 ---
 
 ### [Issue #4: Implement bounded on-call responder and prove controlled remediation](https://github.com/LE0ST/tasklane/issues/4)
-- **Status:** PLANNED
-- **Lead Agent:** Flash 3.8 High (Implementation) & GPT-6 Astra (Operations)
-- **Reviewers:** GPT-6.1 Sol (Security & Sandbox Audit)
-- **Governance Gate:** Human Maintainer
+- **Status:** IMPLEMENTED (Draft PR targeting main; awaiting independent SRE/Security audit)
+- **Branch:** `project1/oncall-responder`
+- **Implementation:** Gemini Flash High
+- **Independent SRE Review:** Astra Medium
+- **Independent Security & Sandbox Audit:** Sol Medium
+- **Governance Gate:** Human Maintainer (`LE0ST`)
 - **Rubric Criteria Targeted:**
-  - **On-Call Agent (2 pts):** Autonomous responder receives alert webhook, inspects logs/traces, diagnoses root cause, and applies a verified code fix in an isolated disposable worktree.
-- **Specification Links:** `_docs/specs.md` §6 (Acceptance Criteria AC-1..AC-10).
+  - **On-Call Agent (2 pts):** Autonomous responder receives alert webhook, inspects logs/traces, diagnoses root cause, and applies a verified code fix in an isolated disposable worktree after explicit operator authorization.
+- **Specification Links:** `_docs/specs.md` §6 (Acceptance Criteria AC-1..AC-10), `docs/oncall-drill.md`.
 - **Deliverables:**
   - `incident-response/` service listening on port 8001 (`POST /alerts`).
   - Evidence gathering script querying Loki and Tempo for correlated context.
-  - Strict read-only default sandbox mode (`-s read-only`) with explicit policy-gated remediation demonstration.
+  - Strict read-only default sandbox mode with explicit operator-approved remediation demonstration.
+  - Disposable workspace containment rejecting directory traversal and credential leaks.
   - **Safety Guarantee:** No `--dangerously-bypass-approvals-and-sandbox`; no operation on live Render/Neon production environments.
 
 ---

@@ -100,6 +100,11 @@ jobs:
           CI: "true"
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tasklane_test
 
+      - name: Run on-call incident-response unit and security tests
+        run: uv run pytest incident-response/tests -v
+        env:
+          CI: "true"
+
   docker-e2e-smoke:
     name: Docker Build, Smoke Tests & Playwright E2E
     runs-on: ubuntu-latest
