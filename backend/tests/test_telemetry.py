@@ -24,7 +24,7 @@ from telemetry import enable_telemetry
 
 
 def _create_test_app():
-    """Create a standalone FastAPI app with real TaskLane Pydantic schemas and routes."""
+    """Create a standalone FastAPI test application using TaskLane's Pydantic schemas and representative route templates."""
     app = FastAPI()
 
     tasks_db = {}
@@ -160,10 +160,57 @@ def test_telemetry_initialization_failure_fails_open_with_incompatible_batch_set
     # Must not attach middleware
     assert not app.user_middleware
 
-    # Must log sanitized warning without crashing
-    assert any("OpenTelemetry disabled: initialization error (ValueError:" in rec.message for rec in caplog.records)
+    # Must log fixed non-sensitive warning without leaking raw exception details or config
+    warning_records = [rec for rec in caplog.records if rec.name == "tasklane.telemetry"]
+    assert any(
+        "OpenTelemetry disabled: initialization failed; continuing with telemetry disabled" in rec.message
+        for rec in warning_records
+    )
+    for rec in caplog.records:
+        assert "ValueError" not in rec.message
+        assert "max_export_batch_size" not in rec.message
 
-    # Real application and health check must continue serving traffic normally
+    # Standalone test application and health check must continue serving traffic normally
+    client = TestClient(app)
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "healthy"}
+
+
+def test_telemetry_initialization_exception_sanitizes_secret_marker(monkeypatch, caplog):
+    """Verify that initialization exceptions containing sensitive strings fail open without leaking secrets into logs."""
+    monkeypatch.setenv("TASKLANE_OTEL_ENABLED", "true")
+    monkeypatch.setenv("TASKLANE_OTEL_ENDPOINT", "http://127.0.0.1:4318")
+
+    secret_marker = "SUPER_SECRET_TOKEN_OTEL_INIT_998877"
+
+    def _exploding_tracer_provider(*args, **kwargs):
+        raise RuntimeError(f"Connection failed to https://user:{secret_marker}@otel-collector.internal:4318")
+
+    from opentelemetry.sdk import trace as sdk_trace
+    monkeypatch.setattr(sdk_trace, "TracerProvider", _exploding_tracer_provider)
+
+    app = _create_test_app()
+    with caplog.at_level(logging.WARNING, logger="tasklane.telemetry"):
+        assert enable_telemetry(app) is False
+
+    # Middleware must not be attached
+    assert not app.user_middleware
+
+    # Warning must be logged with the fixed, sanitized message
+    telemetry_records = [rec for rec in caplog.records if rec.name == "tasklane.telemetry"]
+    assert any(
+        "OpenTelemetry disabled: initialization failed; continuing with telemetry disabled" in rec.message
+        for rec in telemetry_records
+    )
+
+    # Secret marker and raw exception details must NOT appear in any captured log
+    for rec in caplog.records:
+        assert secret_marker not in rec.message
+        assert "RuntimeError" not in rec.message
+        assert "otel-collector.internal" not in rec.message
+
+    # Standalone test application remains fully operational
     client = TestClient(app)
     resp = client.get("/health")
     assert resp.status_code == 200
@@ -304,8 +351,8 @@ def test_telemetry_normalizes_http_method_in_span_name_and_metric_labels(monkeyp
     assert log_entry["method"] == "OTHER"
 
 
-def test_telemetry_real_tasklane_handlers_404_422_and_in_memory_export(monkeypatch, caplog):
-    """Verify real TaskLane handlers for 422 Pydantic validation and 404 with cross-signal trace correlation."""
+def test_telemetry_schema_validation_422_and_404_in_memory_export(monkeypatch, caplog):
+    """Verify standalone test app with TaskLane schemas for 422 Pydantic validation and 404 with trace correlation."""
     app = _create_test_app()
 
     monkeypatch.setenv("TASKLANE_OTEL_ENABLED", "true")

@@ -86,7 +86,7 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
         duration = meter.create_histogram("tasklane_http_duration", unit="ms")
         tracer = traces.get_tracer("tasklane.http")
 
-    except Exception as exc:
+    except Exception:
         if handler_added and handler_added in logger.handlers:
             logger.removeHandler(handler_added)
         if created_traces:
@@ -105,9 +105,7 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
             except Exception:
                 pass
         logger.warning(
-            "OpenTelemetry disabled: initialization error (%s: %s)",
-            type(exc).__name__,
-            str(exc),
+            "OpenTelemetry disabled: initialization failed; continuing with telemetry disabled"
         )
         return False
 

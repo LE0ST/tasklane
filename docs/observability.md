@@ -10,7 +10,7 @@ TaskLane implements an opt-in, fail-open OpenTelemetry instrumentation architect
 - **Zero Production Overhead:** The default production Docker image copies `telemetry.py` but does not install or enable the OpenTelemetry SDK. If `TASKLANE_OTEL_ENABLED` is omitted or false, `enable_telemetry` immediately returns `False` without mounting any middleware.
 - **Safe Metadata Only:** Telemetry records only bounded HTTP metadata (templated routes `/api/tasks`, `/api/tasks/{task_id}`, `/health`, `/api/health`, or `other`, standard HTTP methods, and status codes). Task titles, descriptions, query parameters, authorization headers, and secrets are never exported.
 - **Method Normalization (LOW):** Request methods outside `{"GET", "POST", "PATCH", "DELETE", "OPTIONS"}` are normalized to `"OTHER"`. Spans are named `HTTP <SAFE_METHOD>` (e.g. `HTTP GET`, `HTTP POST`, `HTTP OTHER`), preventing untrusted client strings from polluting span names.
-- **Genuinely Fail-Open Initialization (MEDIUM 2):** Provider and exporter construction is protected against configuration/runtime exceptions (e.g. incompatible `OTEL_BSP_MAX_QUEUE_SIZE` / `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`). If initialization fails, any added handlers or providers are cleanly discarded, a sanitized warning is logged, and the application starts normally with telemetry disabled.
+- **Genuinely Fail-Open Initialization (MEDIUM 2):** Provider and exporter construction is protected against configuration/runtime exceptions (e.g. incompatible `OTEL_BSP_MAX_QUEUE_SIZE` / `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`). If initialization fails, any added handlers or providers are cleanly discarded, a fixed non-sensitive warning is logged (with zero dynamic exception strings, secrets, or configuration interpolation), and the application starts normally with telemetry disabled.
 - **Exception Redaction (HIGH 1):** `tracer.start_as_current_span()` explicitly specifies `record_exception=False` and `set_status_on_exception=False`. Unhandled failures and 5xx responses set `StatusCode.ERROR` with description `None`, completely preventing raw exception text, SQL queries, or stack traces from entering span events, span attributes, or structured logs. Real exception propagation to FastAPI handlers is preserved.
 - **Fail-Open Resilience:** If the OTLP Collector is unreachable or unconfigured, the application continues to process HTTP traffic without latency or crashes.
 
@@ -166,17 +166,18 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ## 4. Automated Test Coverage & Verification Evidence
 
 ### 4.1 Test Counts
-- **32 Non-Integration Backend Tests** (14 API/CRUD tests + 18 Telemetry & Isolation tests).
+- **33 Non-Integration Backend Tests** (14 API/CRUD tests + 19 Telemetry & Isolation tests).
 - **5 PostgreSQL Integration Tests** (`test_postgres_integration.py`).
-- **37 Total Backend Tests**.
+- **38 Total Backend Tests**.
 
 ### 4.2 Telemetry Test Breakdown (`backend/tests/test_telemetry.py`)
-18 automated tests verify:
+19 automated tests verify:
 - **Default Disabled State:** `enable_telemetry` returns `False` when flag is omitted; HTTP requests execute normally with zero telemetry logging.
 - **Fail-Open Behavior:** Missing SDK packages (`ImportError`) and unreachable OTLP endpoints fail open without crashing or blocking HTTP traffic.
-- **Incompatible Configuration Fail-Open:** Tests incompatible batch processor settings (`OTEL_BSP_MAX_QUEUE_SIZE=1`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE=2`), asserting that `enable_telemetry` returns `False`, no middleware is installed, a sanitized warning is logged, and `/health` serves traffic normally.
+- **Incompatible Configuration Fail-Open:** Tests incompatible batch processor settings (`OTEL_BSP_MAX_QUEUE_SIZE=1`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE=2`), asserting that `enable_telemetry` returns `False`, no middleware is installed, a sanitized warning is logged without leaking raw exception details or configuration values, and `/health` serves traffic normally.
+- **Initialization Warning Sanitization Regression:** Injects an initialization failure containing a synthetic secret marker and URL credentials into TracerProvider construction, verifying `enable_telemetry` returns `False`, no middleware is installed, a fixed non-sensitive warning is logged without dynamic exception interpolation or secret leakage, and the application serves traffic normally.
 - **Method Normalization:** Synthetic nonstandard method (`PROPFIND`) normalizes span name to `HTTP OTHER`, attribute `http.request.method` to `"OTHER"`, metric label to `"OTHER"`, and log entry to `"OTHER"`.
-- **Real TaskLane Handlers (422 & 404):** Tests real Pydantic validation errors (422) and 404 not found, asserting status classification (`StatusCode.UNSET`), empty events, and cross-signal trace correlation.
+- **Schema Validation & Not Found Handling (422 & 404):** Tests a standalone FastAPI test application using TaskLane's real Pydantic schemas (triggering 422 Unprocessable Entity) and representative 404 routes, asserting status classification (`StatusCode.UNSET`), empty events, and cross-signal trace correlation.
 - **In-Memory Telemetry Assertions:**
   - POST and PATCH spans are created as `SpanKind.SERVER`.
   - Span attributes contain safe metadata only (`http.request.method`, `http.route`, `http.response.status_code`).
@@ -192,6 +193,6 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ### 4.3 CI Pipeline Integration
 - Run in GitHub Actions with 4 parallel/sequential verification jobs:
   1. `Frontend Build & Asset Verification`
-  2. `Backend Tests & PostgreSQL Integration` (37 tests)
+  2. `Backend Tests & PostgreSQL Integration` (38 tests)
   3. `Docker Build, Smoke Tests & Playwright E2E`
   4. `OpenTelemetry Local Stack & Correlation` (`observability-smoke`)
