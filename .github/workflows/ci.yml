@@ -209,6 +209,8 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d
       - name: Verify local metrics, logs and trace correlation
         run: python3 observability/smoke.py
+      - name: Verify 5xx alert fires and resolves after local drill
+        run: python3 observability/incident_smoke.py
       - name: Dump container logs on failure
         if: failure()
         run: docker compose -f docker-compose.yml -f docker-compose.observability.yml logs --tail=120
