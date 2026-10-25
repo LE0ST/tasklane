@@ -56,6 +56,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Local incident injection must be INSIDE the OpenTelemetry middleware so 503s are observed.
+from incident_drill import install_local_drill
+install_local_drill(app)
+
 # Explicit opt-in, safe no-op if optional SDK is not installed.
 from telemetry import enable_telemetry
 enable_telemetry(app)
