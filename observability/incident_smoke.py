@@ -5,6 +5,7 @@ Requires the optional localhost-only Compose stack. Never call Render or Neon.
 No production credentials, request bodies, or telemetry payloads are printed.
 """
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -25,7 +26,12 @@ SINK = "http://127.0.0.1:8088"
 def validate_metric_increase(current_val, baseline_val):
     """Validate that metric has increased strictly above an established baseline.
 
-    A zero-valued series or non-positive value must NEVER pass as evidence of an error.
+    A zero-valued series, nonfinite value (NaN, inf), or negative value must NEVER pass as evidence of an error.
+    Requirements:
+    - Both current_val and baseline_val must be convertible to float and finite (math.isfinite).
+    - baseline_val must be nonnegative (b_val >= 0.0).
+    - current_val must be nonnegative and strictly positive (c_val > 0.0).
+    - current_val must be strictly greater than baseline_val (c_val > b_val).
     """
     if current_val is None or baseline_val is None:
         return False
@@ -34,9 +40,19 @@ def validate_metric_increase(current_val, baseline_val):
         b_val = float(baseline_val)
     except (TypeError, ValueError):
         return False
+
+    # Reject NaN, positive infinity, and negative infinity
+    if not (math.isfinite(c_val) and math.isfinite(b_val)):
+        return False
+
+    # Reject negative values
+    if c_val < 0.0 or b_val < 0.0:
+        return False
+
     # Must be strictly positive and strictly greater than baseline
     if c_val <= 0.0 or c_val <= b_val:
         return False
+
     return True
 
 
@@ -133,32 +149,60 @@ def validate_tempo_error_trace(data, expected_trace_id, expected_status_code=503
 
 
 def validate_webhook_recovery(events, alertname="TaskLane5xxRate"):
-    """Validate ordered, matching firing then resolved events from the alert sink.
+    """Validate complete event history for the matching alert through terminal resolution.
 
-    Rejects resolved-before-firing, missing firing, or empty event history.
+    Requirements:
+    1. Filter the event list to matching entries for `alertname` with a valid dict structure.
+       Unrelated alerts are ignored without concealing invalid matching transitions.
+    2. Event history must contain at least one matching event. Empty, non-list, or missing
+       histories are rejected.
+    3. The matching sequence must start with 'firing'. Histories starting with a matching
+       'resolved' (e.g. resolved -> firing -> resolved or resolved -> firing) are rejected.
+    4. The terminal matching state must be 'resolved'. A final matching 'firing' after
+       previous resolution or an ongoing firing state is rejected.
+    5. No 'firing' transition is permitted after any 'resolved' event has been observed
+       (strictly enforces genuine firing followed by terminal resolution without flapping).
+    6. Duplicate notifications are handled consistently: consecutive 'firing' events
+       (e.g. initial notification + resend) or consecutive 'resolved' events (e.g. multiple
+       resolved notifications) are permitted as long as all firing notifications precede all
+       resolved notifications and the terminal state is 'resolved'.
     """
     if not isinstance(events, list) or not events:
         return False
 
-    firing_idx = None
-    for idx, event in enumerate(events):
+    matching_statuses = []
+    for event in events:
         if not isinstance(event, dict):
             continue
-        if event.get("alertname") == alertname and event.get("status") == "firing":
-            firing_idx = idx
-            break
+        if event.get("alertname") == alertname:
+            status = event.get("status")
+            if status not in ("firing", "resolved"):
+                # Malformed status for matching alert
+                return False
+            matching_statuses.append(status)
 
-    if firing_idx is None:
+    if not matching_statuses:
         return False
 
-    resolved_after_firing = False
-    for idx in range(firing_idx + 1, len(events)):
-        event = events[idx]
-        if isinstance(event, dict) and event.get("alertname") == alertname and event.get("status") == "resolved":
-            resolved_after_firing = True
-            break
+    # Must start with 'firing' (rejects histories starting with matching 'resolved')
+    if matching_statuses[0] != "firing":
+        return False
 
-    return resolved_after_firing
+    # Terminal matching state must be 'resolved' (rejects final matching 'firing')
+    if matching_statuses[-1] != "resolved":
+        return False
+
+    # Enforce that all firing events precede all resolved events.
+    # No firing event can appear after any resolved event has occurred.
+    has_resolved = False
+    for st in matching_statuses:
+        if st == "resolved":
+            has_resolved = True
+        elif st == "firing":
+            if has_resolved:
+                return False
+
+    return True
 
 
 def validate_recovery_query(prom_response_data):
@@ -187,12 +231,40 @@ def run_negative_tests():
     """Execute negative test suite verifying rejection of all false-positive conditions."""
     dummy_tid = "4bf92f3577b34da6a3ce929d0e0e4736"
 
-    # 1. Zero counter values must never pass as evidence of an error
+    # 1. Metric increase validation: reject nonfinite, negative, zero, or unchanged counters
     assert validate_metric_increase(0.0, 0.0) is False, "Zero counter value must fail validation"
     assert validate_metric_increase(0, 0) is False, "Integer 0 counter value must fail validation"
+    assert validate_metric_increase("0", "0") is False, "String '0' counter value must fail validation"
     assert validate_metric_increase(0.0, 1.0) is False, "Zero counter against baseline must fail validation"
     assert validate_metric_increase(1.0, 1.0) is False, "Unchanged counter against baseline must fail validation"
     assert validate_metric_increase(-1.0, 0.0) is False, "Negative counter must fail validation"
+    assert validate_metric_increase(1.0, -1.0) is False, "Negative baseline must fail validation"
+    assert validate_metric_increase(-1.0, -2.0) is False, "Negative values must fail validation"
+    # Reject NaN and 'NaN'
+    assert validate_metric_increase(float("nan"), 0.0) is False, "float NaN must fail validation"
+    assert validate_metric_increase("NaN", 0.0) is False, "String 'NaN' must fail validation"
+    assert validate_metric_increase("nan", 0.0) is False, "String 'nan' must fail validation"
+    assert validate_metric_increase(1.0, float("nan")) is False, "NaN baseline must fail validation"
+    assert validate_metric_increase(1.0, "NaN") is False, "String 'NaN' baseline must fail validation"
+    # Reject positive and negative infinity
+    assert validate_metric_increase(float("inf"), 0.0) is False, "float inf must fail validation"
+    assert validate_metric_increase(float("-inf"), 0.0) is False, "float -inf must fail validation"
+    assert validate_metric_increase(math.inf, 0.0) is False, "math.inf must fail validation"
+    assert validate_metric_increase(-math.inf, 0.0) is False, "-math.inf must fail validation"
+    assert validate_metric_increase("inf", 0.0) is False, "String 'inf' must fail validation"
+    assert validate_metric_increase("-inf", 0.0) is False, "String '-inf' must fail validation"
+    assert validate_metric_increase("Infinity", 0.0) is False, "String 'Infinity' must fail validation"
+    assert validate_metric_increase(1.0, float("inf")) is False, "Infinity baseline must fail validation"
+    # Reject missing or malformed values
+    assert validate_metric_increase(None, 0.0) is False, "None current must fail validation"
+    assert validate_metric_increase(1.0, None) is False, "None baseline must fail validation"
+    assert validate_metric_increase("", 0.0) is False, "Empty string must fail validation"
+    assert validate_metric_increase("invalid", 0.0) is False, "Invalid string must fail validation"
+    assert validate_metric_increase([], 0.0) is False, "List type must fail validation"
+    # Preserve valid 0 -> 1 case
+    assert validate_metric_increase(1.0, 0.0) is True, "Valid 0 -> 1 increase must pass"
+    assert validate_metric_increase(1, 0) is True, "Integer 0 -> 1 increase must pass"
+    assert validate_metric_increase("1.0", "0.0") is True, "String '0.0' -> '1.0' increase must pass"
 
     # 2. UNSET-status traces must fail validation
     unset_trace = {
@@ -271,20 +343,82 @@ def run_negative_tests():
     }
     assert validate_tempo_error_trace(wrong_kind_trace, dummy_tid, 503) is False, "Wrong span kind must fail validation"
 
-    # 4. Resolved-before-firing webhook histories must fail validation
-    resolved_first_history = [
+    # 4. Webhook recovery validation: strict lifecycle, duplicate handling, and anomaly rejection
+    # FAIL: resolved-first histories
+    assert validate_webhook_recovery([
         {"alertname": "TaskLane5xxRate", "status": "resolved"},
         {"alertname": "TaskLane5xxRate", "status": "firing"},
-    ]
-    assert validate_webhook_recovery(resolved_first_history) is False, "Resolved before firing must fail validation"
-
-    only_resolved_history = [
         {"alertname": "TaskLane5xxRate", "status": "resolved"},
-    ]
-    assert validate_webhook_recovery(only_resolved_history) is False, "Only-resolved history must fail validation"
+    ]) is False, "resolved -> firing -> resolved must fail validation"
 
-    empty_history = []
-    assert validate_webhook_recovery(empty_history) is False, "Empty webhook history must fail validation"
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]) is False, "resolved -> firing must fail validation"
+
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is False, "only-resolved history must fail validation"
+
+    # FAIL: firing-after-resolved histories
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]) is False, "firing -> resolved -> firing must fail validation"
+
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]) is False, "only-firing history must fail validation"
+
+    # FAIL: empty, non-list, or malformed histories
+    assert validate_webhook_recovery([]) is False, "Empty history must fail validation"
+    assert validate_webhook_recovery(None) is False, "None history must fail validation"
+    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate", "status": "unknown"}]) is False, "Unknown status must fail validation"
+    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate"}]) is False, "Missing status must fail validation"
+    assert validate_webhook_recovery([123, "malformed"]) is False, "Non-dict entries must fail validation"
+
+    # FAIL: unrelated alerts concealing invalid matching transitions
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "UnrelatedAlert", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]) is False, "Unrelated alert must not conceal invalid matching firing-after-resolved"
+
+    # PASS: standard firing -> resolved
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True, "Standard firing -> resolved must pass"
+
+    # PASS: valid duplicate notifications where terminal state is resolved
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True, "Duplicate firing before resolved must pass"
+
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True, "Firing followed by duplicate resolved must pass"
+
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True, "Duplicate firing followed by duplicate resolved must pass"
+
+    # PASS: unrelated alerts ignored when matching transitions are valid
+    assert validate_webhook_recovery([
+        {"alertname": "UnrelatedAlert", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "UnrelatedAlert", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True, "Unrelated alerts must be ignored when matching transitions are valid"
 
     # 5. NoData or missing telemetry instead of true recovery must fail validation
     nodata_response = {"status": "success", "data": {"result": []}}

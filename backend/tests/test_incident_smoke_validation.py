@@ -3,6 +3,7 @@
 Verifies that zero counter values, UNSET traces, wrong trace IDs/status codes,
 resolved-before-firing webhooks, and NoData queries all fail validation.
 """
+import math
 import sys
 from pathlib import Path
 import pytest
@@ -24,7 +25,7 @@ DUMMY_TID = "4bf92f3577b34da6a3ce929d0e0e4736"
 
 
 # ==============================================================================
-# 1. Metrics validation: zero values must never pass as evidence of an error
+# 1. Metrics validation: zero, nonfinite, negative, or unchanged values fail
 # ==============================================================================
 
 def test_metric_validation_rejects_zero_counter_value():
@@ -35,19 +36,69 @@ def test_metric_validation_rejects_zero_counter_value():
     assert validate_metric_increase(0.0, 1.0) is False
 
 
-def test_metric_validation_rejects_stale_or_non_increase():
+def test_metric_validation_rejects_stale_or_unchanged_counter():
     """Metrics that do not strictly exceed baseline must fail validation."""
     assert validate_metric_increase(1.0, 1.0) is False
     assert validate_metric_increase(1.0, 2.0) is False
+    assert validate_metric_increase(0.0, 0.0) is False
+
+
+def test_metric_validation_rejects_nan_and_string_nan():
+    """NaN values (float or string) must fail validation."""
+    assert validate_metric_increase(float("nan"), 0.0) is False
+    assert validate_metric_increase("NaN", 0.0) is False
+    assert validate_metric_increase("nan", 0.0) is False
+    assert validate_metric_increase("NAN", 0.0) is False
+
+
+def test_metric_validation_rejects_nan_baseline():
+    """NaN baseline values must fail validation."""
+    assert validate_metric_increase(1.0, float("nan")) is False
+    assert validate_metric_increase(1.0, "NaN") is False
+    assert validate_metric_increase(1.0, "nan") is False
+
+
+def test_metric_validation_rejects_positive_and_negative_infinity():
+    """Positive and negative infinity must fail validation."""
+    assert validate_metric_increase(float("inf"), 0.0) is False
+    assert validate_metric_increase(float("-inf"), 0.0) is False
+    assert validate_metric_increase(math.inf, 0.0) is False
+    assert validate_metric_increase(-math.inf, 0.0) is False
+    assert validate_metric_increase("inf", 0.0) is False
+    assert validate_metric_increase("-inf", 0.0) is False
+    assert validate_metric_increase("Infinity", 0.0) is False
+    assert validate_metric_increase("-Infinity", 0.0) is False
+    assert validate_metric_increase(1.0, float("inf")) is False
+    assert validate_metric_increase(1.0, float("-inf")) is False
+
+
+def test_metric_validation_rejects_negative_values():
+    """Negative counter or baseline values must fail validation."""
+    assert validate_metric_increase(-1.0, 0.0) is False
+    assert validate_metric_increase(1.0, -1.0) is False
+    assert validate_metric_increase(-1.0, -2.0) is False
+    assert validate_metric_increase("-0.1", 0.0) is False
+
+
+def test_metric_validation_rejects_missing_or_malformed_values():
+    """None, empty string, non-numeric strings, and unexpected types fail validation."""
     assert validate_metric_increase(None, 0.0) is False
     assert validate_metric_increase(1.0, None) is False
+    assert validate_metric_increase(None, None) is False
+    assert validate_metric_increase("", 0.0) is False
     assert validate_metric_increase("invalid", 0.0) is False
+    assert validate_metric_increase(1.0, "invalid") is False
+    assert validate_metric_increase([], 0.0) is False
+    assert validate_metric_increase({}, 0.0) is False
 
 
-def test_metric_validation_accepts_positive_increase_over_baseline():
-    """Strictly positive increase above established baseline passes."""
+def test_metric_validation_preserves_valid_0_to_1():
+    """Valid 0 -> 1 increase and positive increases above baseline pass validation."""
     assert validate_metric_increase(1.0, 0.0) is True
+    assert validate_metric_increase(1, 0) is True
+    assert validate_metric_increase("1.0", "0.0") is True
     assert validate_metric_increase(2.0, 1.0) is True
+    assert validate_metric_increase(5.5, 2.3) is True
 
 
 # ==============================================================================
@@ -185,24 +236,8 @@ def test_tempo_validation_accepts_base64_encoded_trace_id():
 
 
 # ==============================================================================
-# 3. Webhook recovery validation: resolved-before-firing and missing firing fail
+# 3. Webhook recovery validation: lifecycle, duplicates, and anomaly rejection
 # ==============================================================================
-
-def test_webhook_validation_rejects_resolved_before_firing():
-    """Resolved event arriving before firing event must fail validation."""
-    history = [
-        {"alertname": "TaskLane5xxRate", "status": "resolved"},
-        {"alertname": "TaskLane5xxRate", "status": "firing"},
-    ]
-    assert validate_webhook_recovery(history) is False
-
-
-def test_webhook_validation_rejects_missing_firing():
-    """History with only resolved event and no prior firing event must fail validation."""
-    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate", "status": "resolved"}]) is False
-    assert validate_webhook_recovery([]) is False
-    assert validate_webhook_recovery(None) is False
-
 
 def test_webhook_validation_accepts_matching_firing_then_resolved():
     """Ordered firing followed by resolved event passes validation."""
@@ -211,6 +246,101 @@ def test_webhook_validation_accepts_matching_firing_then_resolved():
         {"alertname": "TaskLane5xxRate", "status": "resolved"},
     ]
     assert validate_webhook_recovery(history) is True
+
+
+def test_webhook_validation_accepts_valid_duplicate_notifications():
+    """Duplicate notifications where terminal state is resolved pass validation."""
+    # Duplicate firing before resolved
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True
+
+    # Firing followed by duplicate resolved
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True
+
+    # Duplicate firing followed by duplicate resolved
+    assert validate_webhook_recovery([
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]) is True
+
+
+def test_webhook_validation_rejects_resolved_firing_resolved():
+    """Histories starting with resolved (resolved -> firing -> resolved) must fail validation."""
+    history = [
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]
+    assert validate_webhook_recovery(history) is False
+
+
+def test_webhook_validation_rejects_firing_resolved_firing():
+    """Histories with a firing event after previous resolution must fail validation."""
+    history = [
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]
+    assert validate_webhook_recovery(history) is False
+
+
+def test_webhook_validation_rejects_resolved_firing():
+    """Resolved arriving before firing (resolved -> firing) must fail validation."""
+    history = [
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]
+    assert validate_webhook_recovery(history) is False
+
+
+def test_webhook_validation_rejects_single_resolved():
+    """History containing only resolved event without prior firing must fail validation."""
+    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate", "status": "resolved"}]) is False
+
+
+def test_webhook_validation_rejects_single_firing():
+    """History containing only firing event without terminal resolution must fail validation."""
+    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate", "status": "firing"}]) is False
+
+
+def test_webhook_validation_rejects_empty_or_malformed_histories():
+    """Empty list, None, non-list, or malformed alert payloads fail validation."""
+    assert validate_webhook_recovery([]) is False
+    assert validate_webhook_recovery(None) is False
+    assert validate_webhook_recovery("firing") is False
+    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate", "status": "unknown"}]) is False
+    assert validate_webhook_recovery([{"alertname": "TaskLane5xxRate"}]) is False
+    assert validate_webhook_recovery([123, "invalid"]) is False
+
+
+def test_webhook_validation_handles_unrelated_alerts_correctly():
+    """Unrelated alerts are ignored without concealing invalid matching transitions."""
+    # Unrelated alerts with valid matching transition
+    valid_with_unrelated = [
+        {"alertname": "UnrelatedAlert", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "UnrelatedAlert", "status": "firing"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+    ]
+    assert validate_webhook_recovery(valid_with_unrelated) is True
+
+    # Unrelated alerts interspersed with invalid matching transition (firing after resolved)
+    invalid_with_unrelated = [
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+        {"alertname": "UnrelatedAlert", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "resolved"},
+        {"alertname": "TaskLane5xxRate", "status": "firing"},
+    ]
+    assert validate_webhook_recovery(invalid_with_unrelated) is False
 
 
 # ==============================================================================

@@ -5,7 +5,7 @@
 ## What we detect
 The versioned Grafana-managed `TaskLane5xxRate` rule evaluates the dedicated aggregate counter `sum(increase(tasklane_task_5xx_errors_total[2m]))`, which counts HTTP 5xx responses strictly across TaskLane task endpoints (`/api/tasks`, `/api/tasks/{task_id}`). It evaluates every 10s and alerts when at least one task-request 5xx was seen in a sliding 2-minute window. It **does not** alert on CPU-only metrics, expected 4xx responses, static files, or health-check requests.
 
-The aggregate counter is initialized at zero during telemetry startup, ensuring even the first POST/500, PATCH/500, or local 503 is detected reliably without artificial per-status baseline seeding. If the application or telemetry exporter is unavailable, the Prometheus query returns No Data, preserving Grafana's **NoData** or **Error** behavior rather than masking missing telemetry as healthy. Note: Detection of missing telemetry is not instantaneous; cached exporter metrics and scrape intervals (5s) may delay stale-service detection until Prometheus scrape timeouts elapse. A separate missing-telemetry alert is a possible later enhancement.
+The aggregate counter is initialized at zero during telemetry startup, ensuring even the first POST/500, PATCH/500, or local 503 is detected reliably without artificial per-status baseline seeding. Note that first-error detection requires Prometheus to observe the initialized counter baseline (requiring Prometheus to observe the zero baseline across scrape intervals before `increase()` computes a positive delta). If the application or telemetry exporter is unavailable, the Prometheus query returns No Data, preserving Grafana's **NoData** or **Error** behavior rather than masking missing telemetry as healthy. Note: Detection of missing telemetry is not instantaneous; cached metrics and scrape intervals may delay detection of telemetry loss, potentially for several minutes until Prometheus scrape timeouts and staleness deltas elapse. A separate missing-telemetry alert is a possible later enhancement.
 
 Grafana provisions the rule, webhook contact point `tasklane-local-drill`, and notification policy from `observability/alerting/tasklane.yml`. Notifications are delivered exclusively within the local Compose network to `http://alert-sink:8080/alerts`. The Python standard-library receiver stores only allowlisted `TaskLane5xxRate` statuses (`firing` / `resolved`) in RAM; it never logs or executes untrusted webhook content. The receiver is a simple local evidence sink, **not** the on-call agent planned for Issue #4.
 
@@ -50,9 +50,9 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 `down -v` deletes **only this demo project's** database volume, but use it only when intentionally discarding demo data. Local telemetry backends use ephemeral storage.
 
 ## Verified CI evidence
-- The local drill confirms a non-mutating 503 with Prometheus/Loki/Tempo evidence, a delivered Grafana `firing` webhook, followed by a delivered `resolved` webhook and verified normal Grafana rule state.
-- Negative tests verify strict rejection of zero counter values, UNSET/OK traces, wrong trace IDs/status codes, resolved-before-firing webhook histories, and NoData recovery queries.
-- First-error detection is guaranteed by the dedicated aggregate `tasklane_task_5xx_errors_total` counter initialized at zero during telemetry startup.
+- The local drill confirms a non-mutating 503 with Prometheus/Loki/Tempo evidence, a delivered Grafana `firing` webhook, followed by a delivered terminal `resolved` webhook and zero PromQL error rate. Where supported, Grafana rule state recovery is optionally checked via the rule management API endpoint.
+- Negative tests verify strict rejection of zero counter values, nonfinite/negative/unchanged metrics (NaN, +/-inf), UNSET/OK traces, wrong trace IDs/status codes, resolved-before-firing or malformed webhook histories, and NoData recovery queries.
+- First-error detection is supported by the dedicated aggregate `tasklane_task_5xx_errors_total` counter initialized at zero during telemetry startup, active once Prometheus observes the zero baseline.
 - **Scope:** Programmatic CI and webhook API evidence, not a manual Grafana screenshot.
 
 ## Evidence checklist
