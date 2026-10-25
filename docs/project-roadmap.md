@@ -15,9 +15,9 @@ gantt
     title Project 1 Implementation Timeline
     dateFormat YYYY-MM-DD
     section Phase 1: Team & Specs
-    Issue #1: Agent Team & Modular Docs (Draft PR #6)  :active,  des1, 2026-10-23, 2026-10-24
+    Issue #1: Agent Team & Modular Docs (PR #6 merged)  :done,  des1, 2026-10-23, 2026-10-23
     section Phase 2: Telemetry
-    Issue #2: OpenTelemetry Instrumentation            :         des2, 2026-10-24, 2026-10-24
+    Issue #2: OpenTelemetry Instrumentation (Draft PR #7) :active, des2, 2026-10-23, 2026-10-24
     section Phase 3: Alerting
     Issue #3: User-Impact Alert & Drill                :         des3, 2026-10-24, 2026-10-25
     section Phase 4: SRE Automation
@@ -31,9 +31,9 @@ gantt
 ## 2. Issue Mapping to Official Rubric Criteria
 
 ### [Issue #1: Define agent team, public tracking, and modular project context](https://github.com/LE0ST/tasklane/issues/1)
-- **Status:** **IN PROGRESS (Draft PR #6 open; resolving QA findings)**
+- **Status:** **DONE — PR #6 squash-merged to `main` as `f6f4c7b` and deployed on Render October 23, 2026.**
 - **Lead Agent:** Flash 3.8 High (Implementation) & GPT-6 Luna (Tech Lead)
-- **Review Status:** Independent QA review conducted by GPT-6.1 Sol (Request Changes on Draft PR #6 with 9 findings); Flash 3.8 High resolving findings; awaiting QA re-review and Maintainer approval.
+- **Review Status:** External Sol QA findings were addressed, the maintainer approved PR #6, and the merged release was verified on Render. The GitHub PR records the external review summary.
 - **Governance Gate:** Human Maintainer (`LE0ST`)
 - **Rubric Criteria Targeted:**
   - **Product Specification (2 pts):** Specification exists, public GitHub Issues tracker established, tasks define testable acceptance criteria.
@@ -45,7 +45,7 @@ gantt
 ---
 
 ### [Issue #2: Instrument TaskLane task workflows with correlated telemetry](https://github.com/LE0ST/tasklane/issues/2)
-- **Status:** PLANNED
+- **Status:** IN PROGRESS — Draft PR [#7](https://github.com/LE0ST/tasklane/pull/7), local telemetry smoke evidence [Actions run 40047097348](https://github.com/LE0ST/tasklane/actions/runs/40047097348); independent reviews and maintainer approval pending.
 - **Lead Agent:** Flash 3.8 High (Implementation) & GPT-6 Astra (SRE Design)
 - **Reviewers:** GPT-6.1 Sol (QA/Security)
 - **Governance Gate:** Human Maintainer
@@ -117,8 +117,8 @@ gantt
 | Milestone | Issues Addressed | Target Criteria Scope | Provisional Target Estimate |
 |:---|:---|:---|:---:|
 | **Baseline (Phase 0)** | Prior Homework 2 & 3 | Problem Description (2), Application (2), Testing (2), Containerization (2), Deployment (2), CI/CD (2), Product Spec (1), Context (1) | **14 / 24 pts** (Baseline) |
-| **Milestone 1** | Issue #1 *(In Progress, PR #6)* | Target: Product Specification (2/2), Agent Team (2/2), Context Management (2/2) | **18 / 24 pts** *(Provisional Target)* |
-| **Milestone 2** | Issue #2 *(Planned)* | Target: Observability (2/2) | **20 / 24 pts** *(Provisional Target)* |
+| **Milestone 1** | Issue #1 *(Merged, PR #6)* | Target: Product Specification (2/2), Agent Team (2/2), Context Management (2/2) | **18 / 24 pts** *(Provisional Target)* |
+| **Milestone 2** | Issue #2 *(Draft PR #7; not yet merged)* | Target: Observability (2/2) | **20 / 24 pts** *(Provisional Target)* |
 | **Milestone 3** | Issue #3 *(Planned)* | Target: Alerting on User Impact (1/1) | **21 / 24 pts** *(Provisional Target)* |
 | **Milestone 4** | Issue #4 *(Planned)* | Target: On-Call Agent (2/2) | **23 / 24 pts** *(Provisional Target)* |
 | **Milestone 5** | Issue #5 *(Planned)* | Target: Verification, Rollback, Peer Review Evidence Pack | **23–24 / 24 pts** *(Provisional Target)* |

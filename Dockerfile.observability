@@ -1,0 +1,7 @@
+# Local-only derivative of the normal production image.
+# Build the base image first: docker compose build app
+FROM tasklane:hw3
+# Install optional OpenTelemetry packages in the existing venv, with fixed versions.
+RUN uv pip install --python /app/.venv/bin/python \
+    opentelemetry-sdk==1.37.0 \
+    opentelemetry-exporter-otlp-proto-http==1.37.0
