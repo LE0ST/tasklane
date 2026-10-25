@@ -33,7 +33,7 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # Copy backend application source code, Alembic configuration, and migrations
-COPY backend/database.py backend/main.py backend/models.py backend/schemas.py backend/telemetry.py ./
+COPY backend/database.py backend/main.py backend/models.py backend/schemas.py backend/telemetry.py backend/incident_drill.py ./
 COPY backend/alembic.ini ./
 COPY backend/alembic/ ./alembic/
 

@@ -84,6 +84,10 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
         meter = mp.get_meter("tasklane.http")
         count = meter.create_counter("tasklane_http_requests", unit="1")
         duration = meter.create_histogram("tasklane_http_duration", unit="ms")
+        # Dedicated, bounded, aggregate task-operation 5xx counter.
+        # Single metric series initialized at zero during telemetry startup so first error is detectable.
+        task_5xx_counter = meter.create_counter("tasklane_task_5xx_errors", unit="1")
+        task_5xx_counter.add(0)
         tracer = traces.get_tracer("tasklane.http")
 
     except Exception:
@@ -136,6 +140,11 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
                     span.set_status(Status(StatusCode.ERROR))
                 route = request.scope.get("route") or route
                 template = getattr(route, "path", None)
+                # Locally injected 503 short-circuits routing; still use the known static API template.
+                if template is None and request.url.path == "/api/tasks":
+                    template = "/api/tasks"
+                elif template is None and request.url.path.startswith("/api/tasks/"):
+                    template = "/api/tasks/{task_id}"
                 if template not in {"/api/tasks", "/api/tasks/{task_id}", "/health", "/api/health"}:
                     template = "other"
                 attrs = {
@@ -147,6 +156,8 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
                 span.set_attributes(attrs)
                 count.add(1, attrs)
                 duration.record(elapsed, attrs)
+                if template in {"/api/tasks", "/api/tasks/{task_id}"} and status_code >= 500:
+                    task_5xx_counter.add(1)
                 ctx = span.get_span_context()
                 logger.info(
                     json.dumps({
