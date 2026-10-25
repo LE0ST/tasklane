@@ -61,6 +61,8 @@ class Handler(BaseHTTPRequestHandler):
                     _events.append({"alertname": "TaskLane5xxRate", "status": item_status})
                     del _events[:-25]
                 accepted = True
+            # Log only allowlisted state/acceptance flags; never the alert payload.
+            print("Local alert webhook: status=%s accepted=%s" % (status, accepted), flush=True)
             self.send_json(200, {"accepted": accepted})
         except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
             self.send_json(400, {"error": "invalid_json"})
