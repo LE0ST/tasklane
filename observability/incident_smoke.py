@@ -86,6 +86,18 @@ def main():
     good_status, _ = get_json(API + "/api/tasks", "POST", {"Content-Type": "application/json"}, {"title": "issue3-baseline", "priority": "low"})
     assert good_status == 201
 
+    # A brand-new Prometheus 503 counter starts at zero: otherwise the first
+    # observed sample could already be 1 and increase() would miss the incident.
+    def seeded_error_series():
+        q = urllib.parse.quote('tasklane_http_requests_total{http_route="/api/tasks",http_response_status_code="503"}')
+        response_code, response = get_json(PROM + "/api/v1/query?query=" + q)
+        results = response.get("data", {}).get("result", [])
+        return response_code == 200 and bool(results) and all(float(row["value"][1]) == 0 for row in results)
+
+    poll(seeded_error_series, 75)
+    # Give Grafana time to evaluate the known-zero baseline.
+    time.sleep(12)
+
     # Only a specially guarded local POST can be deliberately failed.
     bad_status, bad_body = get_json(API + "/api/tasks", "POST",
         {"Content-Type": "application/json", "x-tasklane-drill": "inject-503"},
