@@ -295,6 +295,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | **Engineering Process** | [`docs/process.md`](docs/process.md) | Verified 13-stage delivery lifecycle, review handoffs, and no-fabrication policy |
 | **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete system topology, container layers, and Neon database integration |
 | **Local Observability Demo** | [`docs/observability.md`](docs/observability.md) | Optional OTel stack, reproducible CI correlation evidence, metrics/logs/traces and Grafana instructions |
+| **Local Incident Drill** | [`docs/incident-drill.md`](docs/incident-drill.md) | Versioned Grafana 5xx alert and webhook, guarded 503 injection, reproducible firing/recovery evidence |
 | **Project Roadmap** | [`docs/project-roadmap.md`](docs/project-roadmap.md) | Milestones, rubric criteria mapping, and tracking of Issues #1–#5 |
 | **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical acceptance criteria (AC-1..AC-10) and validation rules |
 | **OpenAPI Specification** | [`openapi.yaml`](openapi.yaml) | OpenAPI 3.1 REST API contract |
