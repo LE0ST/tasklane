@@ -405,10 +405,15 @@ def main():
     baseline_val = get_metric_scalar("tasklane_task_5xx_errors_total")
     assert baseline_val == 0.0, f"Expected baseline 0.0, got {baseline_val}"
 
-    # Verify alert query evaluates to zero on baseline
-    baseline_query_url = PROM + "/api/v1/query?query=" + urllib.parse.quote("sum(increase(tasklane_task_5xx_errors_total[2m]))")
-    _, baseline_query_data = get_json(baseline_query_url)
-    assert validate_recovery_query(baseline_query_data), "Baseline alert query must evaluate to zero"
+    # Poll until Prometheus has multiple samples so increase() evaluates to zero
+    def baseline_alert_query_evaluates_to_zero():
+        query_url = PROM + "/api/v1/query?query=" + urllib.parse.quote("sum(increase(tasklane_task_5xx_errors_total[2m]))")
+        st, data = get_json(query_url)
+        if st != 200:
+            return False
+        return validate_recovery_query(data)
+
+    poll(baseline_alert_query_evaluates_to_zero, 60)
 
     # Give Grafana time to evaluate the known-zero baseline
     time.sleep(12)
