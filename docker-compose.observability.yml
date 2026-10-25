@@ -28,6 +28,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/tasklane
       TASKLANE_OTEL_ENABLED: "true"
+      TASKLANE_INCIDENT_DRILL_ENABLED: local-only
       TASKLANE_OTEL_ENDPOINT: http://otel-collector:4318
     depends_on:
       otel-collector:
@@ -79,5 +80,17 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./observability/alerting/tasklane.yml:/etc/grafana/provisioning/alerting/tasklane.yml:ro
     depends_on: [prometheus, loki, tempo]
+    restart: unless-stopped
+
+  # Disposable local contact point receiver; never expose on a public interface.
+  alert-sink:
+    image: python:3.11.14-alpine3.22
+    command: ["python", "-u", "/opt/tasklane/alert_sink.py"]
+    volumes:
+      - ./observability/alert_sink.py:/opt/tasklane/alert_sink.py:ro
+    ports:
+      - "127.0.0.1:8088:8080"
+    mem_limit: 64m
     restart: unless-stopped
