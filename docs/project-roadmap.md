@@ -60,14 +60,16 @@ gantt
 ---
 
 ### [Issue #3: Add a real user-impact alert and reproducible incident drill](https://github.com/LE0ST/tasklane/issues/3)
-- **Status:** IN PROGRESS — [Draft PR #8](https://github.com/LE0ST/tasklane/pull/8), local firing/recovery verified in [CI run 40221894536](https://github.com/LE0ST/tasklane/actions/runs/40221894536); independent reviews and human approval pending.
-- **Lead Agent:** GPT-6 Astra (SRE Design) & Flash 3.8 High (Implementation)
-- **Reviewers:** GPT-6.1 Sol (QA/Security)
-- **Governance Gate:** Human Maintainer
+- **Status:** IN PROGRESS — [Draft PR #8](https://github.com/LE0ST/tasklane/pull/8); independent SRE and QA/security review findings resolved in PR #8.
+- **Implementation:** GPT-6 Luna through the maintainer's GitHub connection.
+- **Independent SRE Review:** Astra.
+- **Independent QA/Security Review:** Sol.
+- **Human Merge Authority:** LE0ST.
 - **Rubric Criteria Targeted:**
-  - **Alerting on User Impact (1 pt):** Evaluates real user failure (e.g., 5xx rate on task creation or invalid state transition over 1m window) rather than generic CPU usage.
+  - **Alerting on User Impact (1 pt):** Evaluates real user failure (e.g., 5xx rate on task creation or invalid state transition over 2m window) rather than generic CPU usage.
 - **Specification Links:** `_docs/specs.md` §4 (Validation Rules), §5 (API Endpoints).
 - **Deliverables:**
+  - Dedicated bounded aggregate task-operation 5xx counter (`tasklane_task_5xx_errors_total`) initialized at zero during startup.
   - Versioned Grafana alert rule `TaskLane5xxRate`.
   - Local reproducible failure drill producing matching metric, structured log, trace, and trace ID.
   - Sanitized before/after evidence showing alert firing and resolution.

@@ -341,8 +341,9 @@ def test_telemetry_normalizes_http_method_in_span_name_and_metric_labels(monkeyp
     metric_data = metric_reader.get_metrics_data()
     scope_metrics = metric_data.resource_metrics[0].scope_metrics[0].metrics
     for metric in scope_metrics:
-        for point in metric.data.data_points:
-            assert point.attributes.get("http.request.method") == "OTHER"
+        if metric.name in {"tasklane_http_requests", "tasklane_http_duration"}:
+            for point in metric.data.data_points:
+                assert point.attributes.get("http.request.method") == "OTHER"
 
     # Log record method MUST be 'OTHER'
     log_records = [r for r in caplog.records if r.name == "tasklane.telemetry"]

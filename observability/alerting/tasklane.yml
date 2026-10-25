@@ -23,7 +23,7 @@ groups:
                 type: prometheus
                 uid: prometheus
               editorMode: code
-              expr: 'sum(increase(tasklane_http_requests_total{http_route=~"/api/tasks|/api/tasks/.*",http_response_status_code=~"5.."}[2m])) or (0 * sum(increase(tasklane_http_requests_total{http_route="/api/tasks"}[2m])))'
+              expr: 'sum(increase(tasklane_task_5xx_errors_total[2m]))'
               instant: true
               range: false
               intervalMs: 1000
