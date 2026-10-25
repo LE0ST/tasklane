@@ -136,6 +136,9 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
                     span.set_status(Status(StatusCode.ERROR))
                 route = request.scope.get("route") or route
                 template = getattr(route, "path", None)
+                # Locally injected 503 short-circuits routing; still use the known static API template.
+                if template is None and request.url.path == "/api/tasks" and safe_method == "POST":
+                    template = "/api/tasks"
                 if template not in {"/api/tasks", "/api/tasks/{task_id}", "/health", "/api/health"}:
                     template = "other"
                 attrs = {
