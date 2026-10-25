@@ -165,6 +165,25 @@ def test_tempo_validation_accepts_verified_otlp_error_layout():
     assert validate_tempo_error_trace(trace_data, DUMMY_TID, 503) is True
 
 
+def test_tempo_validation_accepts_base64_encoded_trace_id():
+    """Tempo protojson returns byte arrays as base64 strings; must normalize and match."""
+    import base64
+    b64_tid = base64.b64encode(bytes.fromhex(DUMMY_TID)).decode()
+    trace_data = {
+        "batches": [{
+            "scopeSpans": [{
+                "spans": [{
+                    "traceId": b64_tid,
+                    "kind": 2,
+                    "status": {"code": 2},
+                    "attributes": [{"key": "http.response.status_code", "value": {"intValue": "503"}}]
+                }]
+            }]
+        }]
+    }
+    assert validate_tempo_error_trace(trace_data, DUMMY_TID, 503) is True
+
+
 # ==============================================================================
 # 3. Webhook recovery validation: resolved-before-firing and missing firing fail
 # ==============================================================================

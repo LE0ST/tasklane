@@ -40,47 +40,69 @@ def validate_metric_increase(current_val, baseline_val):
     return True
 
 
+def normalize_trace_id(val):
+    """Normalize hex or base64 binary trace ID into a 32-character lowercase hex string."""
+    if not val:
+        return ""
+    s = str(val).strip()
+    if len(s) == 32 and all(c in "0123456789abcdefABCDEF" for c in s):
+        return s.lower()
+    try:
+        import base64
+        raw = base64.b64decode(s)
+        h = raw.hex()
+        if len(h) == 32:
+            return h.lower()
+    except Exception:
+        pass
+    return s.lower()
+
+
 def validate_tempo_error_trace(data, expected_trace_id, expected_status_code=503):
     """Validate that Tempo response contains a span with matching trace ID, SERVER kind, HTTP status, and ERROR status.
 
+    Supports verified Tempo response layouts (hex or base64 trace IDs, scopeSpans or instrumentationLibrarySpans).
     Does NOT accept arbitrary nonempty batches or UNSET/OK traces.
     """
     if not isinstance(data, dict):
         return False
-    batches = data.get("batches")
+    batches = data.get("batches") or data.get("resourceSpans")
+    if isinstance(data.get("trace"), dict):
+        batches = data["trace"].get("resourceSpans") or data["trace"].get("batches") or batches
     if not isinstance(batches, list) or not batches:
         return False
 
-    clean_expected_tid = expected_trace_id.lower().strip() if expected_trace_id else ""
+    clean_expected_tid = normalize_trace_id(expected_trace_id)
     if not clean_expected_tid:
         return False
 
     for batch in batches:
         if not isinstance(batch, dict):
             continue
-        for scope_span in batch.get("scopeSpans", []):
+        scope_spans = batch.get("scopeSpans") or batch.get("instrumentationLibrarySpans") or []
+        for scope_span in scope_spans:
             if not isinstance(scope_span, dict):
                 continue
             for span in scope_span.get("spans", []):
                 if not isinstance(span, dict):
                     continue
 
-                # 1. Trace ID check
-                span_tid = str(span.get("traceId", "")).lower().strip()
+                # 1. Trace ID check (supports both hex and base64 byte encoding from Tempo)
+                span_tid = normalize_trace_id(span.get("traceId"))
                 if span_tid != clean_expected_tid:
                     continue
 
                 # 2. Kind check: SERVER kind in OTel is 2 or "SPAN_KIND_SERVER"
                 kind = span.get("kind")
-                if kind not in (2, "SPAN_KIND_SERVER", "server", "Server"):
+                if kind not in (2, "2", "SPAN_KIND_SERVER", "server", "Server"):
                     continue
 
                 # 3. Status check: Status code ERROR in OTel is 2 or "STATUS_CODE_ERROR"
                 status_obj = span.get("status", {})
                 if not isinstance(status_obj, dict):
                     continue
-                status_code = status_obj.get("code")
-                if status_code not in (2, "STATUS_CODE_ERROR", "ERROR", "error"):
+                code = status_obj.get("code")
+                if code not in (2, "2", "STATUS_CODE_ERROR", "ERROR", "error"):
                     continue
 
                 # 4. HTTP response status code metadata check
@@ -90,7 +112,7 @@ def validate_tempo_error_trace(data, expected_trace_id, expected_status_code=503
                     for attr in attrs:
                         if not isinstance(attr, dict):
                             continue
-                        if attr.get("key") == "http.response.status_code":
+                        if attr.get("key") in ("http.response.status_code", "http.status_code"):
                             val_obj = attr.get("value", {})
                             if isinstance(val_obj, dict):
                                 val = val_obj.get("intValue") or val_obj.get("stringValue") or val_obj.get("value")
@@ -100,7 +122,8 @@ def validate_tempo_error_trace(data, expected_trace_id, expected_status_code=503
                                 matched_status = True
                                 break
                 elif isinstance(attrs, dict):
-                    if str(attrs.get("http.response.status_code")) == str(expected_status_code):
+                    val = attrs.get("http.response.status_code") or attrs.get("http.status_code")
+                    if val is not None and str(val) == str(expected_status_code):
                         matched_status = True
 
                 if matched_status:
@@ -287,6 +310,23 @@ def run_negative_tests():
         }]
     }
     assert validate_tempo_error_trace(valid_error_trace, dummy_tid, 503) is True
+
+    # Tempo base64-encoded trace ID format must be supported
+    import base64
+    b64_tid = base64.b64encode(bytes.fromhex(dummy_tid)).decode()
+    b64_valid_trace = {
+        "batches": [{
+            "scopeSpans": [{
+                "spans": [{
+                    "traceId": b64_tid,
+                    "kind": 2,
+                    "status": {"code": 2},
+                    "attributes": [{"key": "http.response.status_code", "value": {"intValue": "503"}}]
+                }]
+            }]
+        }]
+    }
+    assert validate_tempo_error_trace(b64_valid_trace, dummy_tid, 503) is True, "Base64 Tempo trace ID must be supported"
     assert validate_metric_increase(1.0, 0.0) is True
     assert validate_webhook_recovery([
         {"alertname": "TaskLane5xxRate", "status": "firing"},
