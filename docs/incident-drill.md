@@ -1,6 +1,6 @@
 # Issue #3 — User-Impact 5xx Alert and Local Incident Drill
 
-**Status:** Implementation awaiting CI evidence and independent QA. All changes are limited to the disposable, local observability Compose stack. The live Render and Neon services must not be used for this drill.
+**Status:** End-to-end local firing and recovery were verified in [GitHub Actions run 40221894536](https://github.com/LE0ST/tasklane/actions/runs/40221894536). Independent Astra/Sol review and maintainer merge authorization remain pending. All changes are limited to the disposable, local observability Compose stack. The live Render and Neon services must not be used for this drill.
 
 ## What we detect
 The versioned Grafana-managed `TaskLane5xxRate` rule reads Prometheus `tasklane_http_requests_total`, restricted to TaskLane task endpoints and HTTP 5xx responses. It evaluates every 10s and alerts when at least one task-request 5xx was seen in a sliding 2-minute window. It **does not** alert on CPU-only metrics, expected 4xx responses, static files, or health-check requests.
@@ -49,15 +49,21 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 
 `down -v` deletes **only this demo project's** database volume, but use it only when intentionally discarding demo data. Local telemetry backends use ephemeral storage.
 
+## Verified CI evidence
+- [Run 40221894536](https://github.com/LE0ST/tasklane/actions/runs/40221894536): 4 of 4 jobs completed successfully on the alerting implementation.
+- The local drill confirmed a non-mutating 503 with Prometheus/Loki/Tempo evidence, a delivered Grafana `firing` webhook, followed by a delivered `resolved` webhook.
+- The initial [run 40221323992](https://github.com/LE0ST/tasklane/actions/runs/40221323992) exposed a genuine first-error counter initialization limitation. The local-only 503 counter is now seeded at zero and the smoke explicitly waits for that baseline before injecting the error.
+- **Scope:** Programmatic CI and webhook API evidence, not a manual Grafana screenshot.
+
 ## Evidence checklist
-- [ ] CI confirms the actual 503 and healthy post-drill API
-- [ ] CI confirms task was not created during injected failure
-- [ ] Prometheus has TaskLane task 5xx counter data
-- [ ] Loki POST 503 log contains matching safe route and nonzero trace ID
-- [ ] Tempo returns corresponding server trace
-- [ ] Grafana webhook contact point delivers `firing`
-- [ ] After the 2-minute rolling window, Grafana delivers `resolved`
-- [ ] Frontend/backend/PostgreSQL/Playwright regression checks remain passing
+- [x] CI confirms the actual 503 and healthy post-drill API
+- [x] CI confirms task was not created during injected failure
+- [x] Prometheus has TaskLane task 5xx counter data
+- [x] Loki POST 503 log contains matching safe route and nonzero trace ID
+- [x] Tempo returns corresponding server trace
+- [x] Grafana webhook contact point delivers `firing`
+- [x] After the 2-minute rolling window, Grafana delivers `resolved`
+- [x] Frontend/backend/PostgreSQL/Playwright regression checks remain passing
 - [ ] Optional Grafana UI screenshots captured locally
 
 ## Security and limitations
