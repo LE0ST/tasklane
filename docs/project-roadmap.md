@@ -17,9 +17,9 @@ gantt
     section Phase 1: Team & Specs
     Issue #1: Agent Team & Modular Docs (PR #6 merged)  :done,  des1, 2026-10-23, 2026-10-23
     section Phase 2: Telemetry
-    Issue #2: OpenTelemetry Instrumentation (Draft PR #7) :active, des2, 2026-10-23, 2026-10-24
+    Issue #2: OpenTelemetry Instrumentation (PR #7 merged) :done, des2, 2026-10-23, 2026-10-25
     section Phase 3: Alerting
-    Issue #3: User-Impact Alert & Drill                :         des3, 2026-10-24, 2026-10-25
+    Issue #3: User-Impact Alert & Drill (Draft PR #8)    :active, des3, 2026-10-25, 2026-10-26
     section Phase 4: SRE Automation
     Issue #4: Bounded On-Call Responder                :         des4, 2026-10-25, 2026-10-25
     section Phase 5: Submission Pack
@@ -45,7 +45,7 @@ gantt
 ---
 
 ### [Issue #2: Instrument TaskLane task workflows with correlated telemetry](https://github.com/LE0ST/tasklane/issues/2)
-- **Status:** IN PROGRESS — Draft PR [#7](https://github.com/LE0ST/tasklane/pull/7), local telemetry smoke evidence [Actions run 40047097348](https://github.com/LE0ST/tasklane/actions/runs/40047097348); independent reviews and maintainer approval pending.
+- **Status:** **DONE — PR #7 squash-merged to `main` as `cc9cce7`, deployed on Render on October 25, 2026.** Observability remains opt-in and local-only. [CI run 40219455194](https://github.com/LE0ST/tasklane/actions/runs/40219455194).
 - **Lead Agent:** Flash 3.8 High (Implementation) & GPT-6 Astra (SRE Design)
 - **Reviewers:** GPT-6.1 Sol (QA/Security)
 - **Governance Gate:** Human Maintainer
@@ -60,7 +60,7 @@ gantt
 ---
 
 ### [Issue #3: Add a real user-impact alert and reproducible incident drill](https://github.com/LE0ST/tasklane/issues/3)
-- **Status:** PLANNED
+- **Status:** IN PROGRESS — [Draft PR #8](https://github.com/LE0ST/tasklane/pull/8), local firing/recovery verified in [CI run 40221894536](https://github.com/LE0ST/tasklane/actions/runs/40221894536); independent reviews and human approval pending.
 - **Lead Agent:** GPT-6 Astra (SRE Design) & Flash 3.8 High (Implementation)
 - **Reviewers:** GPT-6.1 Sol (QA/Security)
 - **Governance Gate:** Human Maintainer
