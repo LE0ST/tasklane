@@ -64,13 +64,21 @@ def main():
     status_404, _ = request_raw(API + "/api/tasks/999999", "GET")
     assert status_404 == 404, f"Expected 404 for nonexistent task, got {status_404}"
 
-    # 4. Verify Prometheus request metrics for both success and error
-    def metric_exists():
-        query = urllib.parse.quote('tasklane_http_requests_total{http_request_method="PATCH"}')
-        data = request(PROM + "/api/v1/query?query=" + query)
-        return data.get("status") == "success" and bool(data["data"]["result"])
+    # 4. Verify Prometheus request metrics for both success (PATCH) and failure (404)
+    def metrics_exist():
+        q_patch = urllib.parse.quote('tasklane_http_requests_total{http_request_method="PATCH"}')
+        res_patch = request(PROM + "/api/v1/query?query=" + q_patch)
+        if not (res_patch.get("status") == "success" and bool(res_patch["data"]["result"])):
+            return False
 
-    eventually(metric_exists, 90)
+        q_404 = urllib.parse.quote('tasklane_http_requests_total{http_response_status_code="404"}')
+        res_404 = request(PROM + "/api/v1/query?query=" + q_404)
+        if not (res_404.get("status") == "success" and bool(res_404["data"]["result"])):
+            return False
+
+        return True
+
+    eventually(metrics_exist, 90)
 
     # 5. Grafana must expose all provisioned backends, not just start a container.
     eventually(lambda: request(GRAFANA + "/api/health").get("database") == "ok", 60)
@@ -80,10 +88,10 @@ def main():
     )
     assert {"Prometheus", "Loki", "Tempo"}.issubset(sources), "Missing Grafana datasource"
 
-    # 6. Verify Loki JSON logs correlation, regex matching and content redaction
+    # 6. Verify Loki JSON logs correlation, regex matching and content redaction for PATCH (200)
     trace_id_pattern = re.compile(r'"trace_id"\s*:\s*"([0-9a-f]{32})"')
 
-    def find_log():
+    def find_patch_log():
         query = urllib.parse.quote('{service_name="tasklane-api"}')
         data = request(LOKI + "/loki/api/v1/query_range?query=" + query + "&limit=100")
         results = data.get("data", {}).get("result", [])
@@ -95,7 +103,6 @@ def main():
                     continue
                 if record.get("method") == "PATCH" and record.get("route") == "/api/tasks/{task_id}" and record.get("status_code") == 200:
                     assert "otel-ci-local" not in line and '"title"' not in line, "Sensitive task content leaked to logs"
-                    # Verify Grafana derived-field regex extracts the trace_id from the real log line
                     regex_match = trace_id_pattern.search(line)
                     assert regex_match is not None, "Grafana derivedField matcherRegex failed to match Loki log line"
                     extracted_trace_id = regex_match.group(1)
@@ -105,18 +112,39 @@ def main():
                         return trace_id
         return None
 
-    trace_id = eventually(find_log, 90)
+    patch_trace_id = eventually(find_patch_log, 90)
 
-    # 7. Verify Tempo trace existence
-    def trace_exists():
-        data = request(TEMPO + "/api/traces/" + trace_id)
-        return bool(data.get("batches"))
+    # 7. Verify Loki JSON log correlation for failure path (404)
+    def find_404_log():
+        query = urllib.parse.quote('{service_name="tasklane-api"}')
+        data = request(LOKI + "/loki/api/v1/query_range?query=" + query + "&limit=100")
+        results = data.get("data", {}).get("result", [])
+        for stream in results:
+            for timestamp, line in stream.get("values", []):
+                try:
+                    record = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if record.get("method") == "GET" and record.get("route") == "/api/tasks/{task_id}" and record.get("status_code") == 404:
+                    regex_match = trace_id_pattern.search(line)
+                    assert regex_match is not None, "Grafana matcherRegex failed to match 404 Loki log line"
+                    extracted_trace_id = regex_match.group(1)
+                    trace_id = record.get("trace_id")
+                    assert extracted_trace_id == trace_id
+                    if isinstance(trace_id, str) and len(trace_id) == 32 and trace_id != "0" * 32:
+                        return trace_id
+        return None
 
-    eventually(trace_exists, 60)
-    print("PASS: Task create/patch, 404 failure path, request metric, correlated Loki JSON log and Tempo trace.")
+    err_404_trace_id = eventually(find_404_log, 90)
+
+    # 8. Verify Tempo traces for both PATCH (200) and 404 failure path
+    eventually(lambda: bool(request(TEMPO + "/api/traces/" + patch_trace_id).get("batches")), 60)
+    eventually(lambda: bool(request(TEMPO + "/api/traces/" + err_404_trace_id).get("batches")), 60)
+
+    print("PASS: Task create/patch, 404 failure path, request metrics (200 & 404), correlated Loki logs and Tempo traces.")
     print("PASS: Grafana provisioned Prometheus/Loki/Tempo datasources and no task title appears in request log.")
-    print("PASS: Grafana derived-field regex successfully extracted trace ID from real Loki log.")
-    print("Trace ID verified (redacted from CI output).")
+    print("PASS: Grafana derived-field regex successfully extracted trace IDs for both success and 404 error logs.")
+    print("Trace IDs verified (redacted from CI output).")
 
 
 if __name__ == "__main__":

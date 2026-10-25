@@ -34,51 +34,92 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
             logger.warning("OpenTelemetry disabled: TASKLANE_OTEL_ENDPOINT is not configured")
             return False
 
-    resource = Resource.create({"service.name": "tasklane-api", "deployment.environment": "local"})
+    handler_added = None
+    created_traces = None
+    created_mp = None
+    created_lp = None
 
-    if tracer_provider is None:
-        traces = TracerProvider(resource=resource)
-        traces.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint + "/v1/traces")))
-        trace.set_tracer_provider(traces)
-    else:
-        traces = tracer_provider
+    try:
+        resource = Resource.create({"service.name": "tasklane-api", "deployment.environment": "local"})
 
-    if meter_provider is None:
-        reader = PeriodicExportingMetricReader(
-            OTLPMetricExporter(endpoint=endpoint + "/v1/metrics"),
-            export_interval_millis=5000,
+        if tracer_provider is None:
+            created_traces = TracerProvider(resource=resource)
+            span_processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint + "/v1/traces"))
+            created_traces.add_span_processor(span_processor)
+            traces = created_traces
+        else:
+            traces = tracer_provider
+
+        if meter_provider is None:
+            reader = PeriodicExportingMetricReader(
+                OTLPMetricExporter(endpoint=endpoint + "/v1/metrics"),
+                export_interval_millis=5000,
+            )
+            created_mp = MeterProvider(resource=resource, metric_readers=[reader])
+            mp = created_mp
+        else:
+            mp = meter_provider
+
+        if logger_provider is None:
+            created_lp = LoggerProvider(resource=resource)
+            created_lp.add_log_record_processor(
+                BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint + "/v1/logs"))
+            )
+            lp = created_lp
+        else:
+            lp = logger_provider
+
+        otel_handler = LoggingHandler(level=logging.INFO, logger_provider=lp)
+        otel_handler.setFormatter(logging.Formatter("%(message)s"))
+        if not any(isinstance(h, LoggingHandler) for h in logger.handlers):
+            logger.addHandler(otel_handler)
+            handler_added = otel_handler
+        logger.setLevel(logging.INFO)
+
+        if tracer_provider is None:
+            trace.set_tracer_provider(traces)
+        if meter_provider is None:
+            metrics.set_meter_provider(mp)
+
+        meter = mp.get_meter("tasklane.http")
+        count = meter.create_counter("tasklane_http_requests", unit="1")
+        duration = meter.create_histogram("tasklane_http_duration", unit="ms")
+        tracer = traces.get_tracer("tasklane.http")
+
+    except Exception as exc:
+        if handler_added and handler_added in logger.handlers:
+            logger.removeHandler(handler_added)
+        if created_traces:
+            try:
+                created_traces.shutdown()
+            except Exception:
+                pass
+        if created_mp:
+            try:
+                created_mp.shutdown()
+            except Exception:
+                pass
+        if created_lp:
+            try:
+                created_lp.shutdown()
+            except Exception:
+                pass
+        logger.warning(
+            "OpenTelemetry disabled: initialization error (%s: %s)",
+            type(exc).__name__,
+            str(exc),
         )
-        mp = MeterProvider(resource=resource, metric_readers=[reader])
-        metrics.set_meter_provider(mp)
-    else:
-        mp = meter_provider
-
-    if logger_provider is None:
-        lp = LoggerProvider(resource=resource)
-        lp.add_log_record_processor(
-            BatchLogRecordProcessor(OTLPLogExporter(endpoint=endpoint + "/v1/logs"))
-        )
-    else:
-        lp = logger_provider
-
-    otel_handler = LoggingHandler(level=logging.INFO, logger_provider=lp)
-    otel_handler.setFormatter(logging.Formatter("%(message)s"))
-    if not any(isinstance(h, LoggingHandler) for h in logger.handlers):
-        logger.addHandler(otel_handler)
-    logger.setLevel(logging.INFO)
-
-    meter = mp.get_meter("tasklane.http")
-    count = meter.create_counter("tasklane_http_requests", unit="1")
-    duration = meter.create_histogram("tasklane_http_duration", unit="ms")
-    tracer = traces.get_tracer("tasklane.http")
+        return False
 
     @app.middleware("http")
     async def instrument_requests(request, call_next):
         route = request.scope.get("route")
-        method = request.method.upper()
+        raw_method = request.method.upper()
+        safe_method = raw_method if raw_method in {"GET", "POST", "PATCH", "DELETE", "OPTIONS"} else "OTHER"
+        span_name = "HTTP " + safe_method
         started = time.perf_counter()
         with tracer.start_as_current_span(
-            "HTTP " + method,
+            span_name,
             kind=SpanKind.SERVER,
             record_exception=False,
             set_status_on_exception=False,
@@ -99,7 +140,6 @@ def enable_telemetry(app, tracer_provider=None, meter_provider=None, logger_prov
                 template = getattr(route, "path", None)
                 if template not in {"/api/tasks", "/api/tasks/{task_id}", "/health", "/api/health"}:
                     template = "other"
-                safe_method = method if method in {"GET", "POST", "PATCH", "DELETE", "OPTIONS"} else "OTHER"
                 attrs = {
                     "http.request.method": safe_method,
                     "http.route": template,

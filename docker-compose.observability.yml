@@ -1,13 +1,23 @@
 # Optional local-only extension. Never use this override for Render production.
 # Requires Docker Compose 2.24.4 or later for the '!override' attribute replacement feature.
+name: tasklane-observability
+
 services:
   postgres:
+    container_name: tasklane-obs-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: tasklane
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "tasklane"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   app:
+    container_name: tasklane-obs-app
     build:
       context: .
       dockerfile: Dockerfile.observability

@@ -1,6 +1,6 @@
 # TaskLane — Optional Local OpenTelemetry Observability Stack (Issue #2)
 
-**Status:** Updated to resolve SRE Audit findings from **GPT-6 Astra Medium**. The local OpenTelemetry demo includes fail-open request telemetry, sensitive exception redaction, local-only database isolation, localhost port bindings, and Grafana log-to-trace navigation. This stack is **local-only**, strictly disabled on Render production, and requires human maintainer authorization before merging.
+**Status:** Updated to resolve Consolidated QA/SRE Audit findings from **GPT-6 Astra Medium** and **GPT-6.1 Sol Medium**. The local OpenTelemetry stack provides fail-open request telemetry, sensitive exception redaction, local-only database isolation, fixed exec-form healthchecks, localhost port bindings, and Grafana log-to-trace navigation. This stack is **local-only**, strictly disabled on Render production, and requires human maintainer authorization before merging.
 
 ---
 
@@ -9,12 +9,14 @@
 TaskLane implements an opt-in, fail-open OpenTelemetry instrumentation architecture:
 - **Zero Production Overhead:** The default production Docker image copies `telemetry.py` but does not install or enable the OpenTelemetry SDK. If `TASKLANE_OTEL_ENABLED` is omitted or false, `enable_telemetry` immediately returns `False` without mounting any middleware.
 - **Safe Metadata Only:** Telemetry records only bounded HTTP metadata (templated routes `/api/tasks`, `/api/tasks/{task_id}`, `/health`, `/api/health`, or `other`, standard HTTP methods, and status codes). Task titles, descriptions, query parameters, authorization headers, and secrets are never exported.
-- **Exception Redaction (HIGH 1):** `tracer.start_as_current_span()` explicitly specifies `record_exception=False` and `set_status_on_exception=False`. Unhandled failures and 5xx responses set `StatusCode.ERROR` with an empty description (`None`), completely preventing raw exception text, SQL queries, or stack traces from entering span events, span attributes, or structured logs.
-- **Fail-Open Reliability:** If the OTLP Collector is unreachable or unconfigured, the application continues to process HTTP traffic without latency or crashes.
+- **Method Normalization (LOW):** Request methods outside `{"GET", "POST", "PATCH", "DELETE", "OPTIONS"}` are normalized to `"OTHER"`. Spans are named `HTTP <SAFE_METHOD>` (e.g. `HTTP GET`, `HTTP POST`, `HTTP OTHER`), preventing untrusted client strings from polluting span names.
+- **Genuinely Fail-Open Initialization (MEDIUM 2):** Provider and exporter construction is protected against configuration/runtime exceptions (e.g. incompatible `OTEL_BSP_MAX_QUEUE_SIZE` / `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`). If initialization fails, any added handlers or providers are cleanly discarded, a sanitized warning is logged, and the application starts normally with telemetry disabled.
+- **Exception Redaction (HIGH 1):** `tracer.start_as_current_span()` explicitly specifies `record_exception=False` and `set_status_on_exception=False`. Unhandled failures and 5xx responses set `StatusCode.ERROR` with description `None`, completely preventing raw exception text, SQL queries, or stack traces from entering span events, span attributes, or structured logs. Real exception propagation to FastAPI handlers is preserved.
+- **Fail-Open Resilience:** If the OTLP Collector is unreachable or unconfigured, the application continues to process HTTP traffic without latency or crashes.
 
 ```mermaid
 flowchart LR
-    Client["Browser / curl<br/>127.0.0.1:8000"] -->|HTTP| App["TaskLane App<br/>(FastAPI + OTel SDK)"]
+    Client["Browser / curl<br/>127.0.0.1:8000"] -->|HTTP| App["TaskLane App<br/>(FastAPI + OTel SDK 1.37.0)"]
     App -->|Local DB| PG["PostgreSQL 16<br/>127.0.0.1:5432"]
     App -->|OTLP HTTP :4318| OTelCol["OTel Collector Contrib<br/>(Internal :4318)"]
     OTelCol -->|Prometheus Exporter| Prom["Prometheus<br/>127.0.0.1:9090"]
@@ -29,22 +31,34 @@ flowchart LR
 
 ## 2. Security, Isolation & Operational Controls
 
-### 2.1 Enforced Local Database Isolation (HIGH 2)
+### 2.1 Enforced Local Database Isolation & Fixed Exec-Form Healthcheck (HIGH 2 & MEDIUM 1)
 - In `docker-compose.observability.yml`, the application's `DATABASE_URL` is overridden **unconditionally** with the local PostgreSQL service URL:
   ```yaml
   DATABASE_URL: postgresql://postgres:postgres@postgres:5432/tasklane
   ```
-- Even if a developer has an external `DATABASE_URL` (e.g. pointing to Render or Neon) exported in their host shell environment, the resolved Compose configuration strictly targets the local `postgres` container.
-- Disposable local credentials (`postgres:postgres`) and dedicated volume storage (`postgres_data`) ensure zero risk of accidental remote writes during observability drills.
+- The PostgreSQL service healthcheck is pinned to literal **exec-form** arguments:
+  ```yaml
+  healthcheck:
+    test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", "tasklane"]
+  ```
+- Overriding the base CMD-SHELL healthcheck prevents host shell interpolation of `POSTGRES_USER` or `POSTGRES_DB` and protects against shell injection or external connection redirection.
+- Pinned credentials (`postgres:postgres`) and isolated storage ensure zero risk of accidental remote writes.
 
-### 2.2 Localhost Port Binding via Compose `!override` (MEDIUM 3)
+### 2.2 Dedicated Compose Project Identity & Noncolliding Names (MEDIUM 6)
+- `docker-compose.observability.yml` defines `name: tasklane-observability` and non-colliding container names:
+  - `container_name: tasklane-obs-app`
+  - `container_name: tasklane-obs-postgres`
+- This ensures the observability stack runs side-by-side with any existing standard local TaskLane installation (`tasklane-app`, `tasklane-postgres`) without container name collisions.
+- Running `docker compose down -v` on the observability stack purges only `tasklane-observability_postgres_data`, safely preserving the developer's primary `tasklane_postgres_data` volume.
+
+### 2.3 Localhost Port Binding via Compose `!override` (MEDIUM 3)
 - Base `docker-compose.yml` publishes application port `8000:8000` across all interfaces for standard development.
 - `docker-compose.observability.yml` employs the Docker Compose **`!override`** attribute directive to replace inherited port mappings with localhost-only exposure:
   ```yaml
   ports: !override
     - "127.0.0.1:8000:8000"
   ```
-- All observability infrastructure ports are bound exclusively to `127.0.0.1`:
+- All companion services are bound strictly to `127.0.0.1`:
   - Web Application: `127.0.0.1:8000`
   - PostgreSQL: `127.0.0.1:5432`
   - Grafana: `127.0.0.1:3000`
@@ -53,7 +67,7 @@ flowchart LR
   - Tempo: `127.0.0.1:3200`
 - **Minimum Docker Compose Version:** Requires **Docker Compose 2.24.4 or later** to support the `!override` list replacement syntax.
 
-### 2.3 Grafana Derived-Field Log-to-Trace Navigation (MEDIUM 4)
+### 2.4 Grafana Derived-Field Log-to-Trace Navigation (MEDIUM 4)
 - `observability/grafana-datasources.yml` provisions Loki with a whitespace-tolerant derived-field regex:
   ```yaml
   derivedFields:
@@ -64,16 +78,21 @@ flowchart LR
   ```
 - Accurately matches standard Python JSON log output (`"trace_id": "<hex32>"`) and compact JSON (`"trace_id":"<hex32>"`), allowing seamless one-click jumping from Loki request logs directly to the correlated Tempo trace.
 
-### 2.4 Resource Limits & Ephemeral Storage
+### 2.5 SDK Version Alignment (LOW 5)
+- OpenTelemetry packages are locked to exact version **1.37.0** across all environments:
+  - Development lockfile (`backend/uv.lock`): `opentelemetry-sdk==1.37.0`, `opentelemetry-exporter-otlp-proto-http==1.37.0`.
+  - Docker derivative image (`Dockerfile.observability`): `opentelemetry-sdk==1.37.0`, `opentelemetry-exporter-otlp-proto-http==1.37.0`.
+
+### 2.6 Resource Limits & Ephemeral Storage
 To prevent noisy-neighbor resource exhaustion on development workstations and CI runners, all services are strictly constrained:
-- `tasklane-app`: `mem_limit: 384m`
+- `tasklane-obs-app`: `mem_limit: 384m`
 - `otel-collector`: `mem_limit: 320m`
 - `prometheus`: `mem_limit: 384m`, `--storage.tsdb.retention.time=24h`
 - `loki`: `mem_limit: 512m`
 - `tempo`: `mem_limit: 384m`
 - `grafana`: `mem_limit: 512m`
 - **Total Memory Footprint:** Bounded under ~2.5 GB.
-- **Storage Policy:** All telemetry backends utilize ephemeral local storage intended for active debugging, regression verification, and incident drills. Data is cleanly purged on `docker compose down -v`.
+- **Storage Policy:** All telemetry backends utilize ephemeral local storage. Data is cleanly purged on `docker compose down -v`.
 
 ---
 
@@ -104,19 +123,19 @@ Send sample traffic to the local API:
 # Health check
 curl -fsS http://127.0.0.1:8000/health
 
-# Create task (POST)
+# Create task (POST 201)
 created="$(curl -fsS -X POST http://127.0.0.1:8000/api/tasks \
   -H 'Content-Type: application/json' \
   -d '{"title":"otel-demo-task","priority":"low"}')"
 
 task_id="$(printf '%s' "$created" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')"
 
-# Update task status (PATCH)
+# Update task status (PATCH 200)
 curl -fsS -X PATCH "http://127.0.0.1:8000/api/tasks/$task_id" \
   -H 'Content-Type: application/json' \
   -d '{"status":"todo"}'
 
-# Trigger 404 client error
+# Trigger client failure path (GET 404)
 curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/api/tasks/999999
 ```
 
@@ -131,13 +150,13 @@ The script verifies:
 1. Application health endpoint.
 2. Successful task creation and PATCH status updates.
 3. Client failure paths (404 Not Found).
-4. Prometheus metrics delivery (`tasklane_http_requests_total`).
+4. Prometheus metrics delivery for both success (`PATCH`) and failure (`404`).
 5. Provisioned Grafana datasources (`Prometheus`, `Loki`, `Tempo`).
-6. Correlated Loki JSON logs containing the exact 32-hex `trace_id` and asserting no task title leakage.
+6. Correlated Loki JSON logs containing the exact 32-hex `trace_id` for both 200 and 404 operations, asserting no task title leakage.
 7. Grafana derived-field regex extraction against real Loki log lines.
-8. Tempo trace availability matching the correlated `trace_id`.
+8. Tempo trace availability for both 200 and 404 `trace_id`s.
 
-### 3.5 Teardown
+### 3.5 Safe Teardown
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ```
@@ -146,40 +165,33 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 
 ## 4. Automated Test Coverage & Verification Evidence
 
-### 4.1 Unit & Isolation Test Suite (`backend/tests/test_telemetry.py`)
-15 automated tests verify:
+### 4.1 Test Counts
+- **32 Non-Integration Backend Tests** (14 API/CRUD tests + 18 Telemetry & Isolation tests).
+- **5 PostgreSQL Integration Tests** (`test_postgres_integration.py`).
+- **37 Total Backend Tests**.
+
+### 4.2 Telemetry Test Breakdown (`backend/tests/test_telemetry.py`)
+18 automated tests verify:
 - **Default Disabled State:** `enable_telemetry` returns `False` when flag is omitted; HTTP requests execute normally with zero telemetry logging.
 - **Fail-Open Behavior:** Missing SDK packages (`ImportError`) and unreachable OTLP endpoints fail open without crashing or blocking HTTP traffic.
-- **Configuration Validation:** Empty, whitespace, or non-HTTP endpoints log warnings and reject initialization.
+- **Incompatible Configuration Fail-Open:** Tests incompatible batch processor settings (`OTEL_BSP_MAX_QUEUE_SIZE=1`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE=2`), asserting that `enable_telemetry` returns `False`, no middleware is installed, a sanitized warning is logged, and `/health` serves traffic normally.
+- **Method Normalization:** Synthetic nonstandard method (`PROPFIND`) normalizes span name to `HTTP OTHER`, attribute `http.request.method` to `"OTHER"`, metric label to `"OTHER"`, and log entry to `"OTHER"`.
+- **Real TaskLane Handlers (422 & 404):** Tests real Pydantic validation errors (422) and 404 not found, asserting status classification (`StatusCode.UNSET`), empty events, and cross-signal trace correlation.
 - **In-Memory Telemetry Assertions:**
   - POST and PATCH spans are created as `SpanKind.SERVER`.
   - Span attributes contain safe metadata only (`http.request.method`, `http.route`, `http.response.status_code`).
   - Sensitive task titles and descriptions never appear in span attributes, events, or structured logs.
   - Metrics counter and duration histogram are delivered with bounded labels (excluding task IDs).
 - **Error Path & Redaction Verification:**
-  - 422 validation errors and 404 not found spans retain `StatusCode.UNSET` (non-server errors).
   - Unhandled 500 exceptions and handled 500 responses set `StatusCode.ERROR` with description `None`.
   - Synthetic secret markers are confirmed absent from span attributes, span events, status descriptions, and logs.
   - Real exception propagation to outer handlers is preserved.
 - **Regex & Datasource Integrity:** PyYAML validation confirms Loki `derivedFields` uses `datasourceUid: tempo` and matches both standard and compact JSON trace IDs.
-- **Compose Isolation Regression Test:** Verifies via `docker compose config` with a synthetic external `DATABASE_URL` that the app strictly targets local PostgreSQL and binds only to `127.0.0.1:8000`.
+- **Hostile Variable Compose Isolation Regression Test:** Verifies via `docker compose config` with synthetic hostile `DATABASE_URL`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB` that the app strictly targets local PostgreSQL, uses the fixed exec-form healthcheck, binds only to `127.0.0.1:8000`, and contains zero hostile strings.
 
-### 4.2 CI Pipeline Integration
+### 4.3 CI Pipeline Integration
 - Run in GitHub Actions with 4 parallel/sequential verification jobs:
   1. `Frontend Build & Asset Verification`
-  2. `Backend Tests & PostgreSQL Integration`
+  2. `Backend Tests & PostgreSQL Integration` (37 tests)
   3. `Docker Build, Smoke Tests & Playwright E2E`
   4. `OpenTelemetry Local Stack & Correlation` (`observability-smoke`)
-
----
-
-## 5. Verified Functionality vs. Remaining Limitations
-
-| Area | Verified Functionality | Remaining Limitations / Future Work |
-|:---|:---|:---|
-| **Trace Ingestion** | OTLP traces ingested by Tempo; queryable via Tempo API with 32-hex `trace_id`. | Manual UI screenshots from Grafana Explore remain an optional manual evidence task. |
-| **Log Correlation** | Loki receives structured JSON logs; derived-field regex extracts `trace_id`. | Interactive point-and-click UI verification in browser is unautomated. |
-| **Metric Export** | Prometheus scrapes OTel Collector; counter and duration histogram queryable. | Alert rules and Grafana alert manager configuration belong to Issue #3. |
-| **Database Isolation** | Compose override unconditionally targets local PostgreSQL; verified by regression test. | None; strictly isolated. |
-| **Port Security** | `!override` restricts app to `127.0.0.1:8000`; all backends bound to `127.0.0.1`. | Requires Docker Compose 2.24.4+. |
-| **Production Impact** | Zero; SDK uninstalled in base production image, disabled by default. | Must not be enabled on Render. |
