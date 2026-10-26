@@ -85,7 +85,7 @@ All incident response operations enforce strict defense-in-depth guardrails:
 | **Minimal Environment Allowlist** | `sanitize_process_environment()` | Inherits only allowlisted system keys; purges `AWS_*`, `DATABASE_URL`, `TEST_DATABASE_URL`, `HOME`, `PYTHONPATH`. Rejects `LD_PRELOAD`, `PYTEST_ADDOPTS`, proxy overrides. |
 | **Policy Boundary vs Kernel Sandbox** | Application-level isolation | Directory `cwd` containment, unprivileged non-root execution (`oncall`), and env filtering are application policy controls, not a kernel-enforced OS sandbox. |
 | **Bounded Retention** | `prune_stale_resources()` | Retains at most 3 workspaces, 10 incident history records, and automatically prunes expired/consumed tokens. |
-| **Process Timeouts & Output Bounding** | Subprocess timeout & truncation | Bounded buffers (64KB max) to prevent memory exhaustion; process termination on timeout. |
+| **Process Timeout & Output Capture Limitations** | Subprocess timeout and post-run truncation | Only the returned output is truncated to 64KB **after** capture; stdout/stderr pipes themselves are not memory-bounded. Descendant termination and network isolation are not independently enforced. This is not a secure executor for untrusted generated code. |
 
 ---
 
@@ -146,7 +146,7 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
 ## 7. Reproducible Local Commands
 
 ### 7.1 Running Automated Unit & Security Tests
-Verify all 40 automated tests covering alert validation, atomic token auth, single-use consumption, incorrect-token preservation, workspace registry, positive manifest isolation, unsafe override rejection, and mock remediation:
+Verify all 54 responder tests at merged PR #9 baseline, covering alert validation, atomic token auth, single-use consumption, incorrect-token preservation, workspace registry, positive manifest isolation, unsafe override rejection, and mock remediation:
 
 ```bash
 uv run --project backend pytest incident-response/tests -v
@@ -170,7 +170,7 @@ The operator CLI provides an out-of-band path for authorized remediation.
   ```
 
 ### 7.3 Running the End-to-End Incident Drill
-The standalone drill exercises the complete lifecycle in a service-registered disposable workspace (with `TASKLANE_ALLOW_HTTP_REPAIR=true`):
+The standalone **mock-only** drill exercises deterministic fixture remediation in a disposable workspace (with `TASKLANE_ALLOW_HTTP_REPAIR=true`). It is strictly for trusted local demonstration, not an LLM-generated fix or a safely confined worker for arbitrary code:
 
 ```bash
 # Terminal 1: Start the on-call responder with local HTTP repair enabled

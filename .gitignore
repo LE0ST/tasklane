@@ -41,3 +41,8 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# Generated local review comments and tooling caches
+.pr_comment.md
+.mypy_cache/
+.ruff_cache/
