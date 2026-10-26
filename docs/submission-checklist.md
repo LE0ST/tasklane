@@ -8,7 +8,7 @@
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
 - **Earlier verified baseline:** `946b582510219532d0d1e44ba8510f5ca50997e9` (squash PR #11), after documentation PR #10 (`300f4e1`); [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535) passed 4/4, and its matching Render deployment was live.
-- **Current verified submission candidate:** `dd9a52696a961f58d2c5064a926b2c8082a333cf` (`main` on October 26, 2026). [CI 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699) passed 4/4 and Astra verified Render `live` at the same SHA. The new SHA did not receive a separate public `/health` probe. Saving the candidate on the course platform remains unverified. If selecting a later revision, use its exact merged SHA after its own CI/deploy checks.
+- **Current verified submission candidate:** `96d3ebce69ed76345635fa5a90c82773229e0d9e` (merged `main`, October 26, 2026). [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) passed 4/4 and Render deploy `dep-dbfn7b4s728c73dq7f90` was verified `live`. The docs-only SHA did not receive a separate public `/health` probe. Saving the candidate on the course platform remains unverified. If selecting a later revision, use its exact merged SHA after its own CI/deploy checks.
 - Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; **no real AI-generated repair**.
 - Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
 
@@ -39,7 +39,7 @@ Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools
 | Form field | What to enter |
 |---|---|
 | GitHub link to the project | `https://github.com/LE0ST/tasklane` |
-| Commit ID | **Exact verified merged commit SHA**; candidate `dd9a52696a961f58d2c5064a926b2c8082a333cf`, or a later merged revision after its own verification; never a premerge feature-branch HEAD |
+| Commit ID | **Exact verified merged commit SHA**; candidate `96d3ebce69ed76345635fa5a90c82773229e0d9e`, or a later merged revision after its own verification; never a premerge feature-branch HEAD |
 | Learning in public links (optional) | Up to 14 relevant public progress posts; only if already published |
 | Time spent on project (hours) | The maintainer's actual hours; **do not invent** a number |
 | FAQ contribution PR or issue URL (optional) | Only an actual qualifying contribution |
