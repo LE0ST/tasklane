@@ -45,41 +45,31 @@ This project was developed across the **AI Dev Tools Zoomcamp 2026** by DataTalk
 
 ```mermaid
 graph TD
-    subgraph Client Layer
-        Browser[Web Browser / Evaluator]
+    subgraph Client["Client"]
+        Browser["Web browser"]
     end
-
-    subgraph Render Cloud Platform
-        subgraph Render Web Service - Docker Multi-Stage
-            FastAPI[FastAPI Backend :8000 / Dynamic :10000]
-            Static[Mounted React 19 SPA Dist]
-            FastAPI --- Static
-        end
+    subgraph Render["Render web service"]
+        FastAPI["FastAPI API and migrations"]
+        Static["React 19 static assets"]
+        FastAPI --- Static
     end
-
-    subgraph Active Production Database: Neon
-        NeonPG[(Neon PostgreSQL 16<br/>Project: tasklane<br/>Branch: import<br/>DB: neondb)]
-    end
-
-    subgraph Former Temporary Database: Render
-        RenderPG[(Render PostgreSQL 16<br/>tasklane-db<br/>Status: Temporary Reference / Expiring Oct 24, 2026)]
-    end
-
-    subgraph CI/CD Pipeline - GitHub Actions
-        GHA[Push to main / PR]
-        J1[1. Frontend Build & Asset Bundle]
-        J2[2. Backend Unit & Postgres Integration Tests]
-        J3[3. Docker Build, Smoke Tests & Playwright E2E]
-        J4[4. Local OpenTelemetry Correlation & 5xx Alert Drill]
+    NeonPG[("Neon PostgreSQL 16")]
+    Browser -->|"HTTPS"| FastAPI
+    FastAPI -->|"DATABASE_URL (SSL)"| NeonPG
+    subgraph CI["GitHub Actions"]
+        GHA["Push or pull request"]
+        J1["Frontend build"]
+        J2["Backend and responder tests"]
+        J3["Docker and Playwright"]
+        J4["Telemetry and alert drill"]
         GHA --> J1
         J1 --> J2
         J2 --> J3
         J2 --> J4
     end
-
-    Browser -->|HTTPS :443| FastAPI
-    FastAPI -->|Protected DATABASE_URL (SSL)<br/>Alembic Migrations on Lifespan| NeonPG
 ```
+
+Production uses Neon project `tasklane`, branch `import`, database `neondb`. The former Render database is a historical migration source; its current availability is unverified.
 
 ---
 
@@ -90,7 +80,7 @@ graph TD
 | **Frontend** | React 19, Vite 6, CSS Modules | Responsive 5-column Kanban board, live filters, modal dialogs |
 | **Backend** | FastAPI, Uvicorn, Pydantic v2 | RESTful API, input validation, static file serving, lifespan hooks |
 | **Database & ORM** | Neon PostgreSQL 16 (`import` branch), SQLAlchemy 2.0, Alembic | Active verified serverless persistence, schema migrations (`1ea1353bfe87`) |
-| **Former Database** | Render PostgreSQL 16 (`tasklane-db`) | Temporary reference source (expiring October 24, 2026) |
+| **Former Database** | Render PostgreSQL 16 (`tasklane-db`) | Historical migration source; scheduled expiry was October 24, 2026; current availability unverified |
 | **Containerization** | Docker, Multi-stage builds, Docker Compose | Node 20 builder + Python 3.11 slim runtime, pinned `uv:0.12.18` |
 | **Testing** | `pytest`, `httpx`, `@playwright/test` | 76 backend + 54 on-call tests verified on merged `main` (`7c73446`); 9 browser scenarios; all four CI jobs passed |
 | **CI/CD** | GitHub Actions | Automated builds, migrations, smoke checks, Playwright E2E |
@@ -312,7 +302,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | [#2 — Correlated observability](https://github.com/LE0ST/tasklane/issues/2) | Closed | [PR #7](https://github.com/LE0ST/tasklane/pull/7), merged `cc9cce7` |
 | [#3 — User-impact alert and drill](https://github.com/LE0ST/tasklane/issues/3) | Closed | [PR #8](https://github.com/LE0ST/tasklane/pull/8), merged `9968999` |
 | [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446`; approved limited diagnosis-only scope, full model-authored remediation not demonstrated |
-| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | Documentation/evidence work in progress; final submission SHA pending |
+| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | [PR #10](https://github.com/LE0ST/tasklane/pull/10) and [PR #11](https://github.com/LE0ST/tasklane/pull/11) merged; verified candidate `946b582`; platform submission and three peer reviews remain unverified |
 
 See [the detailed traceability matrix](docs/evidence-traceability.md) for CI links, reviewer handoffs, and precise claims.
 
@@ -320,7 +310,7 @@ See [the detailed traceability matrix](docs/evidence-traceability.md) for CI lin
 
 ## Operations, Rollback & Submission
 
-Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The latest independently confirmed Render `live` deployment is `7c73446` (deploy `dep-dbfe8kuk1f9s7386g05g`, completed October 26, 2026 at 05:26 UTC).
+Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The October 26 verification recorded Render `live` at `946b582` (deploy `dep-dbfg9o2jnfac73ens3fg`, completed at 07:45 UTC), matching [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535), 4/4 successful jobs. The public `/health` endpoint returned `{"status":"healthy"}`; see [verification recorded in Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915). This is a dated verification snapshot, not a claim that later commits are already deployed.
 
 **Application rollback is not database rollback.** First select a previously healthy compatible commit/deploy in the Render dashboard, check application health and compatibility with the current Alembic schema, then verify read-only database state. Never trigger `alembic downgrade` or restore production data as an automatic response to a bad app deploy. There is no independently verified backup snapshot claimed here.
 
