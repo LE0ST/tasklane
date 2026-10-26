@@ -1,46 +1,404 @@
-"""Isolated Test Worker Controller for TaskLane On-Call Remediation.
+"""Isolated Test Worker Controller and Session Lifecycle Manager for TaskLane.
 
-CRITICAL ARCHITECTURAL CONSTRAINTS:
+CRITICAL ARCHITECTURAL CONSTRAINTS & SECURITY GUARANTEES:
 1. Separation of concerns: Model API calls occur strictly OUTSIDE the worker on the trusted host.
 2. Positive manifest only: Worker receives ONLY explicit source files and test fixtures in a dedicated
-   staging directory. No .git, no .env, no repository root, no Docker socket.
+   ephemeral staging directory. No .git, no .env, no repository root, no Docker socket.
 3. Defense-in-depth isolation:
    - Network: --network none (strictly no egress or ingress).
    - User: unprivileged non-root user (uid 10001, gid 10001).
    - Filesystem: read-only root (--read-only) with restricted tmpfs (--tmpfs /tmp:rw,noexec,nosuid,size=64m).
    - Resources: CPU bound (--cpus=1.0), memory bound (--memory=512m, --memory-swap=512m), pids bound (--pids-limit=100).
    - Capabilities: --cap-drop ALL, --security-opt no-new-privileges.
-4. Trusted controller lifecycle: The controller creates, bounds, monitors, and immediately destroys
-   the ephemeral worker container (--rm). Neither the responder nor candidate code receives Docker socket access.
-5. Strict timeout and bounded output: Execution is bounded by timeout; stdout/stderr truncated to 64 KB.
+   - Logs: container logging disabled or strictly bounded (--log-driver none).
+4. Process separation: Candidate code executes in its own isolated process (e.g. uvicorn);
+   the trusted verifier executes in a separate process that does NOT import candidate code.
+   The candidate cannot forge success tokens, nonces, or stdout markers.
+5. Strict output budget: stdout/stderr is monitored in real-time with a hard cap (MAX_OUTPUT_BYTES).
+   If exceeded, the container is stopped immediately.
+6. Centralized bounded cleanup: Staging directories and containers are tracked and guaranteed to be
+   destroyed on success, failure, timeout, or cancellation, with bounded cleanup timeouts.
+7. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
 """
+import atexit
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from config import DISPOSABLE_WORKSPACE_MANIFEST, MAX_OUTPUT_BYTES
 
 WORKER_IMAGE_NAME = "tasklane-isolated-worker:local"
 WORKER_TIMEOUT_SECONDS = 45
+CLEANUP_TIMEOUT_SECONDS = 5
+
+# Global registry of active sessions for emergency process exit cleanup
+_ACTIVE_SESSIONS: Set["IsolatedWorkerSession"] = set()
+_ACTIVE_SESSIONS_LOCK = threading.Lock()
+
+
+def _emergency_cleanup_on_exit():
+    """Ensure any orphaned containers and staging directories are pruned at process termination."""
+    with _ACTIVE_SESSIONS_LOCK:
+        for session in list(_ACTIVE_SESSIONS):
+            try:
+                session.cleanup()
+            except Exception:
+                pass
+
+
+atexit.register(_emergency_cleanup_on_exit)
+
+
+class SecurityError(Exception):
+    """Raised when security boundaries (symlinks, path escapes, etc.) are violated."""
+    pass
+
+
+class OutputBudgetExceededError(Exception):
+    """Raised when container stdout/stderr exceeds the allowed memory budget."""
+    pass
+
+
+class IsolatedWorkerSession:
+    """Manages the full lifecycle of an isolated staging directory and associated worker containers.
+    Centralizes creation, container tracking, and bounded cleanup across success, error, timeout, and cancellation.
+    """
+
+    def __init__(self, staging_dir: Path):
+        self.staging_dir = staging_dir
+        self.active_containers: Set[str] = set()
+        self._lock = threading.Lock()
+        self._cleaned = False
+
+        with _ACTIVE_SESSIONS_LOCK:
+            _ACTIVE_SESSIONS.add(self)
+
+    @classmethod
+    def create(
+        cls,
+        source_workspace: Path,
+        staging_parent: Optional[Path] = None,
+    ) -> "IsolatedWorkerSession":
+        """Create a clean staging workspace copying only the positive manifest files securely.
+        Strictly rejects symlinks, path escapes, and concurrent substitution.
+        """
+        resolved_src = source_workspace.resolve()
+        parent_dir = staging_parent or Path(tempfile.gettempdir()).resolve() / "tasklane_worker_staging"
+        parent_dir.mkdir(parents=True, exist_ok=True)
+
+        staging_dir = parent_dir / f"stage_{uuid.uuid4().hex[:12]}"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        session = cls(staging_dir)
+
+        try:
+            # Copy only positive manifest files with strict security validations
+            for rel_path in DISPOSABLE_WORKSPACE_MANIFEST:
+                cls._copy_manifest_file_securely(resolved_src, rel_path, staging_dir)
+
+            # Write trusted harness and verifier scripts into staging
+            backend_dir = staging_dir / "backend"
+            backend_dir.mkdir(parents=True, exist_ok=True)
+
+            harness_path = backend_dir / "_run_functional_harness.py"
+            harness_path.write_text(cls._get_harness_script_content(), encoding="utf-8")
+
+            verifier_path = backend_dir / "_trusted_verifier.py"
+            verifier_path.write_text(cls._get_verifier_script_content(), encoding="utf-8")
+
+            # Final negative validation on the staging directory
+            if (staging_dir / ".git").exists():
+                raise SecurityError("Security Violation: .git detected in worker staging")
+            if (staging_dir / ".env").exists():
+                raise SecurityError("Security Violation: .env detected in worker staging")
+            if (staging_dir / "docker.sock").exists():
+                raise SecurityError("Security Violation: docker.sock detected in staging")
+
+            return session
+        except Exception:
+            session.cleanup()
+            raise
+
+    @staticmethod
+    def _copy_manifest_file_securely(source_root: Path, rel_path: Path, dest_root: Path) -> None:
+        """Securely copy a manifest file with symlink, traversal, and TOCTOU race protection."""
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            raise SecurityError(f"Path escape attempt in manifest path: {rel_path}")
+
+        src_file = source_root / rel_path
+        if not src_file.exists():
+            return
+
+        # 1. Traversal and symlink validation on all path components
+        curr = src_file
+        while curr != source_root:
+            if curr.is_symlink() or os.path.islink(curr):
+                raise SecurityError(f"Symlink rejected in source manifest hierarchy: {curr}")
+            curr = curr.parent
+
+        dest_file = dest_root / rel_path
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Ensure destination directory hierarchy has no symlinks
+        curr_dest = dest_file.parent
+        while curr_dest != dest_root:
+            if curr_dest.is_symlink() or os.path.islink(curr_dest):
+                raise SecurityError(f"Symlink rejected in destination hierarchy: {curr_dest}")
+            curr_dest = curr_dest.parent
+
+        # 2. Open source with O_NOFOLLOW to prevent concurrent substitution during open
+        open_flags_src = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            open_flags_src |= os.O_NOFOLLOW
+
+        try:
+            src_fd = os.open(str(src_file), open_flags_src)
+        except OSError as exc:
+            raise SecurityError(f"Cannot open manifest source without following symlinks: {exc}")
+
+        try:
+            # Verify file descriptor points to a regular file
+            st = os.fstat(src_fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise SecurityError(f"Manifest path is not a regular file: {src_file}")
+
+            # Open destination with O_NOFOLLOW and O_CREAT
+            open_flags_dest = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                open_flags_dest |= os.O_NOFOLLOW
+
+            dest_fd = os.open(str(dest_file), open_flags_dest, 0o600)
+            try:
+                while True:
+                    chunk = os.read(src_fd, 65536)
+                    if not chunk:
+                        break
+                    os.write(dest_fd, chunk)
+            finally:
+                os.close(dest_fd)
+        finally:
+            os.close(src_fd)
+
+        # Post-copy check
+        if os.path.islink(dest_file):
+            raise SecurityError(f"Symlink detected at destination after copy: {dest_file}")
+
+    def register_container(self, container_name: str) -> None:
+        """Register an active container for tracking and bounded cleanup."""
+        with self._lock:
+            self.active_containers.add(container_name)
+
+    def unregister_container(self, container_name: str) -> None:
+        """Unregister a finished container."""
+        with self._lock:
+            self.active_containers.discard(container_name)
+
+    def cleanup(self) -> None:
+        """Centralized bounded cleanup for all associated containers and staging files.
+        Executes with bounded timeouts to prevent hanging.
+        """
+        with self._lock:
+            if self._cleaned:
+                return
+            self._cleaned = True
+
+        # 1. Stop and remove all registered active containers with bounded timeout
+        for container_name in list(self.active_containers):
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=CLEANUP_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except Exception:
+                pass
+            finally:
+                self.active_containers.discard(container_name)
+
+        # 2. Remove staging directory
+        if self.staging_dir and self.staging_dir.exists():
+            try:
+                shutil.rmtree(self.staging_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        with _ACTIVE_SESSIONS_LOCK:
+            _ACTIVE_SESSIONS.discard(self)
+
+    def __enter__(self) -> "IsolatedWorkerSession":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.cleanup()
+
+    @staticmethod
+    def _get_harness_script_content() -> str:
+        """Functional harness that runs the candidate in uvicorn and verifier in a separate process."""
+        return """import os
+import subprocess
+import sys
+import time
+
+env = os.environ.copy()
+env["DATABASE_URL"] = "sqlite:////tmp/tasklane.db"
+
+# 1. Start candidate code in a separate process via uvicorn
+app_proc = subprocess.Popen(
+    [
+        sys.executable, "-m", "uvicorn", "main:app",
+        "--host", "127.0.0.1",
+        "--port", "8765",
+        "--app-dir", "/workspace/backend"
+    ],
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    env=env,
+)
+
+try:
+    # 2. Run the trusted verifier in an independent process (does NOT import candidate code)
+    verifier_proc = subprocess.run(
+        [sys.executable, "/workspace/backend/_trusted_verifier.py", "http://127.0.0.1:8765"],
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    sys.stdout.write(verifier_proc.stdout)
+    sys.stderr.write(verifier_proc.stderr)
+    sys.exit(verifier_proc.returncode)
+finally:
+    app_proc.terminate()
+    try:
+        app_proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        app_proc.kill()
+"""
+
+    @staticmethod
+    def _get_verifier_script_content() -> str:
+        """Trusted functional verifier: uses httpx over TCP loopback; does NOT import main.py."""
+        return """import json
+import sys
+import time
+import httpx
+
+base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
+
+# Wait for server readiness on loopback (up to 50 retries of 0.2s = 10s)
+ready = False
+for _ in range(50):
+    try:
+        r = httpx.get(f"{base_url}/health", timeout=0.5)
+        if r.status_code == 200:
+            ready = True
+            break
+    except Exception:
+        time.sleep(0.2)
+
+if not ready:
+    print("TRUSTED_VERIFIER_JSON:" + json.dumps({
+        "error": "server_not_ready",
+        "normal_status": 0,
+        "urgent_status": 0,
+        "urgent_persisted": False
+    }))
+    sys.exit(1)
+
+# Normal task creation check
+normal_status = 0
+try:
+    r_norm = httpx.post(
+        f"{base_url}/api/tasks",
+        json={"title": "Normal Priority Verification Task", "priority": "medium"},
+        timeout=3,
+    )
+    normal_status = r_norm.status_code
+except Exception:
+    normal_status = 0
+
+# Urgent task creation check
+urgent_status = 0
+urgent_id = None
+try:
+    r_urg = httpx.post(
+        f"{base_url}/api/tasks",
+        json={"title": "Urgent Priority Verification Task", "priority": "urgent"},
+        timeout=3,
+    )
+    urgent_status = r_urg.status_code
+    if urgent_status == 201:
+        urgent_id = r_urg.json().get("id")
+except Exception:
+    urgent_status = 0
+
+# Urgent persistence check
+urgent_persisted = False
+if urgent_status == 201 and urgent_id:
+    try:
+        r_get = httpx.get(f"{base_url}/api/tasks/{urgent_id}", timeout=3)
+        urgent_persisted = (r_get.status_code == 200 and r_get.json().get("priority") == "urgent")
+    except Exception:
+        urgent_persisted = False
+
+result = {
+    "normal_status": normal_status,
+    "urgent_status": urgent_status,
+    "urgent_persisted": urgent_persisted,
+}
+print("TRUSTED_VERIFIER_JSON:" + json.dumps(result))
+
+if normal_status == 201 and urgent_status == 201 and urgent_persisted:
+    sys.exit(0)
+else:
+    sys.exit(1)
+"""
 
 
 class IsolatedWorkerController:
     """Controller for running candidate remediation tests in an isolated Docker worker."""
 
+    _cached_image_id: Optional[str] = None
+    _image_lock = threading.Lock()
+
+    @classmethod
+    def get_immutable_image_id(cls) -> Optional[str]:
+        """Obtain and cache the immutable image ID (sha256 digest) for tasklane-isolated-worker:local."""
+        with cls._image_lock:
+            if cls._cached_image_id:
+                return cls._cached_image_id
+
+            try:
+                res = subprocess.run(
+                    ["docker", "image", "inspect", WORKER_IMAGE_NAME, "--format", "{{.Id}}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if res.returncode == 0 and res.stdout.strip():
+                    cls._cached_image_id = res.stdout.strip()
+                    return cls._cached_image_id
+            except Exception:
+                pass
+            return None
+
     @classmethod
     def check_availability(cls) -> Tuple[bool, str]:
-        """Verify that Docker is available, the daemon is reachable, and the worker image is ready."""
+        """Verify that Docker is available, daemon is reachable, and the worker image is ready."""
         docker_bin = shutil.which("docker")
         if not docker_bin:
             return False, "docker_cli_not_found"
 
-        # Check Docker daemon connectivity
         try:
             res = subprocess.run(
                 ["docker", "info", "--format", "{{.ServerVersion}}"],
@@ -54,21 +412,11 @@ class IsolatedWorkerController:
         except (subprocess.TimeoutExpired, OSError):
             return False, "docker_daemon_timeout"
 
-        # Check worker image presence
-        try:
-            inspect_res = subprocess.run(
-                ["docker", "image", "inspect", WORKER_IMAGE_NAME],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if inspect_res.returncode != 0:
-                return False, f"worker_image_missing: {WORKER_IMAGE_NAME}"
-        except (subprocess.TimeoutExpired, OSError):
-            return False, "docker_inspect_timeout"
+        image_id = cls.get_immutable_image_id()
+        if not image_id:
+            return False, f"worker_image_missing: {WORKER_IMAGE_NAME}"
 
-        # Active probe: run probe container with --network none and --read-only
+        # Active probe using the immutable image ID
         try:
             probe_cmd = [
                 "docker", "run", "--rm",
@@ -78,8 +426,8 @@ class IsolatedWorkerController:
                 "--user", "10001:10001",
                 "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges",
-                "--entrypoint", "python",
-                WORKER_IMAGE_NAME,
+                "--log-driver", "none",
+                image_id,
                 "-c", "print('WORKER_PROBE_OK')"
             ]
             probe_proc = subprocess.run(
@@ -108,49 +456,108 @@ class IsolatedWorkerController:
         source_workspace: Path,
         staging_parent: Optional[Path] = None,
     ) -> Path:
-        """Copy ONLY the explicit positive manifest files into a clean, ephemeral staging directory.
-
-        Guarantees that:
-        - No .git directory exists.
-        - No .env or credentials exist.
-        - No Docker socket or control endpoint exists.
-        """
-        resolved_src = source_workspace.resolve()
-        parent_dir = staging_parent or Path(tempfile.gettempdir()).resolve() / "tasklane_worker_staging"
-        parent_dir.mkdir(parents=True, exist_ok=True)
-
-        staging_dir = parent_dir / f"stage_{uuid.uuid4().hex[:12]}"
-        staging_dir.mkdir(parents=True, exist_ok=True)
-
-        # Copy only manifest files
-        for rel_path in DISPOSABLE_WORKSPACE_MANIFEST:
-            src_file = resolved_src / rel_path
-            if src_file.is_file():
-                dest_file = staging_dir / rel_path
-                dest_file.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src_file, dest_file)
-
-        # Write self-contained task verification script inside staging
-        verify_script = staging_dir / "backend" / "_verify_tasks.py"
-        verify_script.write_text(cls._get_verification_script_content(), encoding="utf-8")
-
-        # Explicit negative validation
-        assert not (staging_dir / ".git").exists(), "Security Violation: .git leaked into worker staging"
-        assert not (staging_dir / ".env").exists(), "Security Violation: .env leaked into worker staging"
-        assert not (staging_dir / "docker.sock").exists(), "Security Violation: docker.sock in staging"
-
-        return staging_dir
+        """Legacy helper: prepares staging workspace using IsolatedWorkerSession."""
+        session = IsolatedWorkerSession.create(source_workspace, staging_parent=staging_parent)
+        return session.staging_dir
 
     @classmethod
-    def run_isolated_verification(
+    def _execute_bounded_container(
         cls,
-        staging_dir: Path,
+        cmd: List[str],
+        container_name: str,
+        session: IsolatedWorkerSession,
+        timeout: int,
+        max_bytes: int = MAX_OUTPUT_BYTES,
+    ) -> Tuple[int, str]:
+        """Execute a container command with streaming output budget enforcement and bounded timeout.
+        If the output exceeds max_bytes, the container is stopped immediately.
+        """
+        session.register_container(container_name)
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        total_bytes = [0]
+        chunks: List[bytes] = []
+        budget_exceeded = threading.Event()
+
+        def stream_reader(pipe):
+            try:
+                while True:
+                    buf = pipe.read(4096)
+                    if not buf:
+                        break
+                    total_bytes[0] += len(buf)
+                    if total_bytes[0] > max_bytes:
+                        budget_exceeded.set()
+                        # Immediately stop container and kill process
+                        subprocess.run(
+                            ["docker", "rm", "-f", container_name],
+                            capture_output=True,
+                            timeout=CLEANUP_TIMEOUT_SECONDS,
+                            check=False,
+                        )
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        break
+                    chunks.append(buf)
+            except Exception:
+                pass
+            finally:
+                pipe.close()
+
+        t_out = threading.Thread(target=stream_reader, args=(proc.stdout,), daemon=True)
+        t_err = threading.Thread(target=stream_reader, args=(proc.stderr,), daemon=True)
+        t_out.start()
+        t_err.start()
+
+        try:
+            retcode = proc.wait(timeout=timeout)
+            t_out.join(timeout=1)
+            t_err.join(timeout=1)
+
+            if budget_exceeded.is_set():
+                return 137, f"ERROR: Output budget exceeded limit of {max_bytes} bytes; container stopped."
+
+            combined_output = b"".join(chunks).decode("utf-8", errors="replace")
+            return retcode, combined_output[:max_bytes]
+
+        except subprocess.TimeoutExpired:
+            # Stop container immediately on timeout
+            subprocess.run(
+                ["docker", "rm", "-f", container_name],
+                capture_output=True,
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return 124, f"ERROR: Execution timed out after {timeout}s; container stopped."
+        finally:
+            session.unregister_container(container_name)
+
+    @classmethod
+    def run_isolated_pytest(
+        cls,
+        session: IsolatedWorkerSession,
         timeout: int = WORKER_TIMEOUT_SECONDS,
-    ) -> Tuple[bool, Dict[str, Any], str]:
-        """Execute candidate verification inside an ephemeral, resource-bounded container with NO network."""
-        container_name = f"tasklane-worker-{uuid.uuid4().hex[:12]}"
-        resolved_staging = staging_dir.resolve()
-        mount_path = str(resolved_staging).replace("\\", "/")
+    ) -> Tuple[bool, str]:
+        """Step 1: Execute pytest against backend unit tests in the isolated container.
+        Returns (pytest_passed, bounded_output).
+        """
+        image_id = cls.get_immutable_image_id()
+        if not image_id:
+            return False, "ERROR: Worker image not available"
+
+        container_name = f"tasklane-pytest-{uuid.uuid4().hex[:12]}"
+        mount_path = str(session.staging_dir.resolve()).replace("\\", "/")
 
         cmd = [
             "docker", "run",
@@ -166,57 +573,107 @@ class IsolatedWorkerController:
             "--memory", "512m",
             "--memory-swap", "512m",
             "--pids-limit", "100",
+            "--log-driver", "none",
             "-v", f"{mount_path}:/workspace:ro",
             "-e", "PYTHONPATH=/workspace/backend",
-            "--entrypoint", "python",
-            WORKER_IMAGE_NAME,
-            "/workspace/backend/_verify_tasks.py",
+            "-e", "DATABASE_URL=sqlite:////tmp/tasklane.db",
+            "-e", "TEST_DATABASE_URL=sqlite:///:memory:",
+            "--entrypoint", "pytest",
+            image_id,
+            "/workspace/backend/tests/test_api.py",
+            "-v",
+            "-o", "cache_dir=/tmp/.pytest_cache",
         ]
 
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
-            raw_output = f"{proc.stdout}\n{proc.stderr}".strip()
-            bounded_output = raw_output[:MAX_OUTPUT_BYTES]
+        retcode, output = cls._execute_bounded_container(cmd, container_name, session, timeout)
+        pytest_passed = (retcode == 0)
+        return pytest_passed, output
 
-            parsed_data = {}
-            for line in proc.stdout.splitlines():
-                if line.startswith("TASKLANE_VERIFY_JSON:"):
-                    try:
-                        parsed_data = json.loads(line[len("TASKLANE_VERIFY_JSON:"):])
-                    except Exception:
-                        pass
+    @classmethod
+    def run_isolated_functional_verification(
+        cls,
+        session: IsolatedWorkerSession,
+        timeout: int = WORKER_TIMEOUT_SECONDS,
+    ) -> Tuple[bool, Dict[str, Any], str]:
+        """Step 2: Execute separate functional verification: candidate runs under uvicorn;
+        the trusted verifier executes in an independent process querying over TCP loopback.
+        Candidate cannot forge success tokens or nonces.
+        """
+        image_id = cls.get_immutable_image_id()
+        if not image_id:
+            return False, {}, "ERROR: Worker image not available"
 
-            success = bool(
-                proc.returncode == 0
-                and parsed_data.get("normal_status") == 201
-                and parsed_data.get("urgent_status") == 201
-                and parsed_data.get("urgent_persisted") is True
-            )
-            return success, parsed_data, bounded_output
+        container_name = f"tasklane-func-{uuid.uuid4().hex[:12]}"
+        mount_path = str(session.staging_dir.resolve()).replace("\\", "/")
 
-        except subprocess.TimeoutExpired:
-            # Enforce cleanup of stalled container
-            subprocess.run(["docker", "rm", "-f", container_name], capture_output=True, check=False)
-            return False, {}, f"ERROR: Isolated worker exceeded timeout of {timeout}s"
-        except Exception as exc:
-            return False, {}, f"ERROR: Isolated worker execution error: {exc}"
-        finally:
-            # Clean up staging directory
-            if staging_dir.exists():
+        cmd = [
+            "docker", "run",
+            "--name", container_name,
+            "--rm",
+            "--network", "none",
+            "--read-only",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+            "--user", "10001:10001",
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+            "--cpus", "1.0",
+            "--memory", "512m",
+            "--memory-swap", "512m",
+            "--pids-limit", "100",
+            "--log-driver", "none",
+            "-v", f"{mount_path}:/workspace:ro",
+            "-e", "PYTHONPATH=/workspace/backend",
+            "-e", "DATABASE_URL=sqlite:////tmp/tasklane.db",
+            "--entrypoint", "python",
+            image_id,
+            "/workspace/backend/_run_functional_harness.py",
+        ]
+
+        retcode, output = cls._execute_bounded_container(cmd, container_name, session, timeout)
+
+        parsed_data = {}
+        for line in output.splitlines():
+            if line.startswith("TRUSTED_VERIFIER_JSON:"):
                 try:
-                    shutil.rmtree(staging_dir, ignore_errors=True)
-                except OSError:
+                    parsed_data = json.loads(line[len("TRUSTED_VERIFIER_JSON:"):])
+                except Exception:
                     pass
+
+        functional_passed = bool(
+            retcode == 0
+            and parsed_data.get("normal_status") == 201
+            and parsed_data.get("urgent_status") == 201
+            and parsed_data.get("urgent_persisted") is True
+        )
+        return functional_passed, parsed_data, output
+
+    @classmethod
+    def run_isolated_verification(
+        cls,
+        staging_dir: Path,
+        timeout: int = WORKER_TIMEOUT_SECONDS,
+    ) -> Tuple[bool, Dict[str, Any], str]:
+        """Combined runner (legacy compatibility): runs both pytest and functional verification separately.
+        Does NOT declare success if either fails.
+        """
+        session = IsolatedWorkerSession(staging_dir)
+        try:
+            pytest_passed, pytest_out = cls.run_isolated_pytest(session, timeout=timeout)
+            func_passed, func_data, func_out = cls.run_isolated_functional_verification(session, timeout=timeout)
+
+            combined_success = bool(pytest_passed and func_passed)
+            combined_output = f"Pytest (passed={pytest_passed}):\n{pytest_out}\n\nFunctional (passed={func_passed}):\n{func_out}"
+            return combined_success, func_data, combined_output
+        finally:
+            session.cleanup()
 
     @classmethod
     def verify_isolation_offline(cls) -> Dict[str, Any]:
         """Run an offline probe inside the worker container verifying strict sandbox boundaries."""
+        image_id = cls.get_immutable_image_id()
+        if not image_id:
+            return {"error": "worker_image_missing"}
+
         probe_script = """
 import os, sys, socket, json
 
@@ -263,8 +720,8 @@ print('OFFLINE_VERIFICATION_JSON:' + json.dumps(results))
             "--user", "10001:10001",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
-            "--entrypoint", "python",
-            WORKER_IMAGE_NAME,
+            "--log-driver", "none",
+            image_id,
             "-c", probe_script,
         ]
 
@@ -276,53 +733,3 @@ print('OFFLINE_VERIFICATION_JSON:' + json.dumps(results))
             return {"error": f"Failed to parse verification output: {proc.stderr[:200]}"}
         except Exception as exc:
             return {"error": str(exc)}
-
-    @staticmethod
-    def _get_verification_script_content() -> str:
-        return """import json
-import sys
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-from database import Base, get_db
-from main import app
-from models import Task
-
-test_engine = create_engine('sqlite:///:memory:', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-Base.metadata.create_all(bind=test_engine)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app, raise_server_exceptions=False)
-
-# 1. Normal task creation
-normal_resp = client.post("/api/tasks", json={"title": "Normal Priority Task", "priority": "medium"})
-normal_status = normal_resp.status_code
-
-# 2. Urgent task creation
-urgent_resp = client.post("/api/tasks", json={"title": "Urgent Priority Task", "priority": "urgent"})
-urgent_status = urgent_resp.status_code
-
-# 3. Persistence verification if urgent succeeded
-urgent_persisted = False
-if urgent_status == 201:
-    task_id = urgent_resp.json().get("id")
-    if task_id:
-        get_resp = client.get(f"/api/tasks/{task_id}")
-        urgent_persisted = (get_resp.status_code == 200 and get_resp.json().get("priority") == "urgent")
-
-result = {
-    "normal_status": normal_status,
-    "urgent_status": urgent_status,
-    "urgent_persisted": urgent_persisted,
-}
-print("TASKLANE_VERIFY_JSON:" + json.dumps(result))
-"""

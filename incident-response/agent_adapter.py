@@ -160,7 +160,7 @@ class MockAgentAdapter(BaseAgentAdapter):
         # Run unit tests in disposable workspace
         tests_passed, test_output = run_disposable_tests(safe_ws)
 
-        # Run real HTTP endpoint and database persistence verification
+        # Run in-process TestClient endpoint and database persistence verification
         http_check = run_http_task_verification_script(safe_ws)
         http_recovered = (
             http_check.get("normal_status") == 201
@@ -175,6 +175,7 @@ class MockAgentAdapter(BaseAgentAdapter):
             "status": "repaired" if (tests_passed and http_recovered) else "repair_failed",
             "diff": diff,
             "tests_passed": tests_passed,
+            "testclient_verified": http_recovered,
             "http_verified": http_recovered,
             "http_details": http_check,
             "workspace": str(safe_ws),
@@ -986,52 +987,63 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                 "tests_passed": False,
             }
 
-        # Stage candidate code and execute tests strictly in isolated worker
-        from isolated_worker import IsolatedWorkerController
+        # Stage candidate code and execute tests strictly in isolated worker session
+        from isolated_worker import IsolatedWorkerController, IsolatedWorkerSession
 
-        staging_dir = None
         try:
-            staging_dir = IsolatedWorkerController.prepare_staging_workspace(safe_ws)
-            candidate_target = staging_dir / "backend" / "main.py"
-            candidate_target.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_file(candidate_target, repaired_content)
+            with IsolatedWorkerSession.create(safe_ws) as session:
+                candidate_target = session.staging_dir / "backend" / "main.py"
+                candidate_target.parent.mkdir(parents=True, exist_ok=True)
+                atomic_write_file(candidate_target, repaired_content)
 
-            # Execute candidate tests inside isolated worker (no network, non-root, read-only root)
-            worker_passed, http_check, worker_output = IsolatedWorkerController.run_isolated_verification(
-                staging_dir,
-                timeout=REPAIR_TIMEOUT_SECONDS,
-            )
+                # Step 1: Execute pytest separately against backend unit tests
+                pytest_passed, pytest_out = IsolatedWorkerController.run_isolated_pytest(
+                    session, timeout=REPAIR_TIMEOUT_SECONDS
+                )
 
-            if not worker_passed:
+                # Step 2: Execute separate functional verification (candidate in uvicorn, verifier in httpx loopback)
+                func_passed, func_data, func_out = IsolatedWorkerController.run_isolated_functional_verification(
+                    session, timeout=REPAIR_TIMEOUT_SECONDS
+                )
+
+                worker_output = (
+                    f"--- Pytest (passed={pytest_passed}) ---\n{pytest_out}\n\n"
+                    f"--- Functional Verification (passed={func_passed}) ---\n{func_out}"
+                )
+
+                if not (pytest_passed and func_passed):
+                    return {
+                        "adapter": self.adapter_name,
+                        "model_executed": True,
+                        "remediation_type": "model_unified_diff",
+                        "status": "repair_failed",
+                        "error": ERROR_TEST_VERIFICATION_FAILED,
+                        "diff": diff_text,
+                        "tests_passed": bool(pytest_passed),
+                        "functional_verified": bool(func_passed),
+                        "functional_details": func_data,
+                        "workspace": str(safe_ws),
+                        "worker_output": worker_output,
+                    }
+
+                # CRITICAL SAFETY REQUIREMENT:
+                # Until reliable independent verification is established and maintainer-approved,
+                # automatic application of model-generated patches to the workspace target file
+                # is kept strictly DISABLED. The target file is NEVER overwritten automatically.
                 return {
                     "adapter": self.adapter_name,
                     "model_executed": True,
                     "remediation_type": "model_unified_diff",
-                    "status": "repair_failed",
-                    "error": ERROR_TEST_VERIFICATION_FAILED,
+                    "status": "automatic_patch_application_disabled",
+                    "automatic_patch_application_enabled": False,
+                    "patch_applied": False,
                     "diff": diff_text,
-                    "tests_passed": False,
-                    "http_verified": False,
-                    "http_details": http_check,
+                    "tests_passed": bool(pytest_passed),
+                    "functional_verified": bool(func_passed),
+                    "functional_details": func_data,
                     "workspace": str(safe_ws),
                     "worker_output": worker_output,
                 }
-
-            # Only after worker verifies the fix does the trusted controller apply it to the workspace
-            atomic_write_file(target_file, repaired_content)
-
-            return {
-                "adapter": self.adapter_name,
-                "model_executed": True,
-                "remediation_type": "model_unified_diff",
-                "status": "repaired",
-                "diff": diff_text,
-                "tests_passed": True,
-                "http_verified": True,
-                "http_details": http_check,
-                "workspace": str(safe_ws),
-                "worker_output": worker_output,
-            }
         except BaseException:
-            # Workspace target file was not modified if worker or staging failed
+            # Workspace target file was never modified
             raise
