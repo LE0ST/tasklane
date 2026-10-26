@@ -1,10 +1,15 @@
 """Process isolation and workspace containment for disposable incident response environments.
 
-SECURITY DISCLAIMER:
+SECURITY DISCLAIMER & LIMITATIONS:
 The containment mechanisms in this module (directory boundary checks, environment allowlisting,
-process timeouts, and unprivileged user execution) provide defense-in-depth policy constraints.
-They DO NOT constitute an OS-level kernel security sandbox. Untrusted code must never be executed
-without an independently isolated worker (e.g. gVisor, Firecracker, or isolated container runtime).
+and subprocess timeouts) provide application-level policy constraints on the host.
+They DO NOT constitute an OS-level kernel security sandbox or microVM boundary:
+- Subprocesses execute as the current host process user (unprivileged non-root execution exists
+  only when the responder is packaged inside its Docker container, not in host subprocesses).
+- Egress network isolation is NOT enforced on host sockets (HTTP_PROXY does not block direct TCP).
+- Output is only truncated to 64 KB after capture; subprocess stdout/stderr pipes are not memory-bounded.
+Untrusted model-generated code must never be executed directly on the host without an independently
+isolated worker (e.g. isolated container runtime with disabled network and dropped capabilities).
 
 Enforces:
 - Service-owned directory and incident-bound workspace registry.
@@ -12,7 +17,7 @@ Enforces:
 - Bounded workspace and token retention (prunes stale directories).
 - Minimal environment allowlist (purges AWS, database URLs, HOME, PYTHONPATH).
 - Rejection of unsafe overrides (LD_PRELOAD, PYTEST_ADDOPTS, proxy settings, credentials).
-- Process execution timeouts and output buffer bounding (64 KB).
+- Subprocess execution timeouts and post-run output truncation (64 KB).
 - Forbidden flags guard (blocks --dangerously-bypass-approvals-and-sandbox).
 """
 import os
@@ -611,9 +616,11 @@ def is_isolated_worker_available() -> bool:
 
     CRITICAL SAFETY REQUIREMENT:
     An environment variable cannot declare on its own that an isolated worker exists.
-    Until a real worker with effective network isolation and filesystem boundaries is
-    implemented, deployed, and verified, this function always returns False to fail closed.
-    Execution of untrusted model-generated code on the host is strictly blocked.
+    Requires verified runtime probe via IsolatedWorkerController.
     """
-    return False
+    try:
+        from isolated_worker import IsolatedWorkerController
+        return IsolatedWorkerController.is_available()
+    except Exception:
+        return False
 

@@ -526,6 +526,8 @@ def validate_unified_diff(
     # 2. Parse and validate hunks strictly
     hunks = []
     idx = hunk_start_idx
+    accumulated_offset = 0
+
     while idx < num_lines:
         line = lines[idx]
         m = hunk_header_re.match(line)
@@ -545,11 +547,19 @@ def validate_unified_diff(
         if old_count == 0 and new_count == 0:
             return False, "empty_hunk"
 
+        # Validate consistent new position relative to accumulated offset
+        expected_new_start = old_start + accumulated_offset
+        if new_start != expected_new_start:
+            return False, "inconsistent_new_range_start"
+
         if hunks:
             last = hunks[-1]
-            last_end = last["old_start"] + max(last["old_count"], 1)
-            if old_start < last_end:
+            last_old_end = last["old_start"] + max(last["old_count"], 1)
+            if old_start < last_old_end:
                 return False, "overlapping_or_out_of_order_hunk"
+            last_new_end = last["new_start"] + max(last["new_count"], 1)
+            if new_start < last_new_end:
+                return False, "overlapping_or_out_of_order_new_hunk"
 
         idx += 1
         actual_old = 0
@@ -589,6 +599,7 @@ def validate_unified_diff(
             "new_start": new_start,
             "new_count": new_count,
         })
+        accumulated_offset += (new_count - old_count)
 
     # Verify all remaining lines are consumed
     while idx < num_lines:
@@ -975,24 +986,23 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                 "tests_passed": False,
             }
 
-        patch_applied = False
-        try:
-            # Atomic tempfile replacement with fsync
-            atomic_write_file(target_file, repaired_content)
-            patch_applied = True
+        # Stage candidate code and execute tests strictly in isolated worker
+        from isolated_worker import IsolatedWorkerController
 
-            # Run verification tests in disposable workspace
-            tests_passed, test_output = run_disposable_tests(safe_ws)
-            http_check = run_http_task_verification_script(safe_ws)
-            http_recovered = (
-                http_check.get("normal_status") == 201
-                and http_check.get("urgent_status") == 201
-                and http_check.get("urgent_persisted") is True
+        staging_dir = None
+        try:
+            staging_dir = IsolatedWorkerController.prepare_staging_workspace(safe_ws)
+            candidate_target = staging_dir / "backend" / "main.py"
+            candidate_target.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_file(candidate_target, repaired_content)
+
+            # Execute candidate tests inside isolated worker (no network, non-root, read-only root)
+            worker_passed, http_check, worker_output = IsolatedWorkerController.run_isolated_verification(
+                staging_dir,
+                timeout=REPAIR_TIMEOUT_SECONDS,
             )
 
-            if not (tests_passed and http_recovered):
-                # Rollback atomically to original backup
-                atomic_write_file(target_file, original_backup)
+            if not worker_passed:
                 return {
                     "adapter": self.adapter_name,
                     "model_executed": True,
@@ -1004,24 +1014,24 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                     "http_verified": False,
                     "http_details": http_check,
                     "workspace": str(safe_ws),
+                    "worker_output": worker_output,
                 }
-        except BaseException:
-            # Restore original file on ANY exception (write error, pytest crash, timeout, etc.)
-            if patch_applied:
-                try:
-                    atomic_write_file(target_file, original_backup)
-                except Exception:
-                    pass
-            raise
 
-        return {
-            "adapter": self.adapter_name,
-            "model_executed": True,
-            "remediation_type": "model_unified_diff",
-            "status": "repaired",
-            "diff": diff_text,
-            "tests_passed": True,
-            "http_verified": True,
-            "http_details": http_check,
-            "workspace": str(safe_ws),
-        }
+            # Only after worker verifies the fix does the trusted controller apply it to the workspace
+            atomic_write_file(target_file, repaired_content)
+
+            return {
+                "adapter": self.adapter_name,
+                "model_executed": True,
+                "remediation_type": "model_unified_diff",
+                "status": "repaired",
+                "diff": diff_text,
+                "tests_passed": True,
+                "http_verified": True,
+                "http_details": http_check,
+                "workspace": str(safe_ws),
+                "worker_output": worker_output,
+            }
+        except BaseException:
+            # Workspace target file was not modified if worker or staging failed
+            raise

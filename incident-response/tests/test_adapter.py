@@ -35,6 +35,7 @@ from fixtures import (
     remove_task_creation_defect,
 )
 from operator_cli import get_token_for_incident
+from isolated_worker import IsolatedWorkerController
 from responder import (
     reset_state,
     run_server,
@@ -266,6 +267,7 @@ def test_direct_tcp_socket_not_blocked_by_host_env():
 def test_deepseek_adapter_repair_blocked_without_isolated_worker(monkeypatch):
     """Verify that repair fails closed with blocked_missing_isolated_worker
     and model_executed=False, even if TASKLANE_ISOLATED_WORKER_ENABLED is set."""
+    monkeypatch.setattr(IsolatedWorkerController, "is_available", classmethod(lambda cls: False))
     monkeypatch.setenv("TASKLANE_ISOLATED_WORKER_ENABLED", "true")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     adapter = DeepSeekAgentAdapter()
@@ -422,6 +424,60 @@ def test_strict_diff_parser_rejects_trailing_unparsed_content():
     assert "trailing" in err or "unparsed" in err
 
 
+def test_strict_diff_parser_rejects_inconsistent_new_range_start_case_999():
+    """Regression test: verify diff parser strictly rejects inconsistent new position
+    specifically including the @@ -1,1 +999,1 @@ case.
+    """
+    diff = (
+        "--- a/backend/main.py\n"
+        "+++ b/backend/main.py\n"
+        "@@ -1,1 +999,1 @@\n"
+        "-line 1\n"
+        "+line 1 repaired\n"
+    )
+    ok, err = validate_unified_diff(diff, allowed_rel_path="backend/main.py")
+    assert ok is False
+    assert err == "inconsistent_new_range_start"
+
+
+def test_strict_diff_parser_rejects_inconsistent_subsequent_hunk_new_position():
+    """Verify diff parser rejects subsequent hunk where new_start does not match accumulated offset."""
+    diff = (
+        "--- a/backend/main.py\n"
+        "+++ b/backend/main.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " line 1\n"
+        "-line 2\n"
+        "+line 2 repaired\n"
+        "+line 2.5 added\n"
+        "@@ -10,1 +15,1 @@\n"
+        "-line 10\n"
+        "+line 10 repaired\n"
+    )
+    ok, err = validate_unified_diff(diff, allowed_rel_path="backend/main.py")
+    assert ok is False
+    assert err == "inconsistent_new_range_start"
+
+
+def test_strict_diff_parser_accepts_consistent_multi_hunk_offsets():
+    """Verify diff parser accepts valid multi-hunk diff where new positions correctly reflect offsets."""
+    diff = (
+        "--- a/backend/main.py\n"
+        "+++ b/backend/main.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        " line 1\n"
+        "-line 2\n"
+        "+line 2 repaired\n"
+        "+line 2.5 added\n"
+        "@@ -10,1 +11,1 @@\n"
+        "-line 10\n"
+        "+line 10 repaired\n"
+    )
+    ok, err = validate_unified_diff(diff, allowed_rel_path="backend/main.py")
+    assert ok is True
+    assert err is None
+
+
 def test_strict_diff_parser_rejects_overlapping_hunks():
     diff = (
         "--- a/backend/main.py\n"
@@ -550,6 +606,7 @@ def test_responder_public_response_sanitizes_upstream_errors_over_http(monkeypat
     """Exercise real HTTP responder endpoint POST /alerts with DeepSeekAgentAdapter active.
     Verify that upstream API errors containing canary secrets never appear in the public HTTP response,
     in GET /status, or in GET /incidents.
+    Only the upstream provider call is intercepted, ensuring local HTTP communication remains real.
     """
     secret_canary = "SUPER_SECRET_CANARY_NEVER_LEAK_IN_HTTP_RESPONSE_999"
     monkeypatch.setenv("DEEPSEEK_API_KEY", secret_canary)
@@ -566,7 +623,7 @@ def test_responder_public_response_sanitizes_upstream_errors_over_http(monkeypat
         adapter = DeepSeekAgentAdapter(api_key=secret_canary)
         set_active_adapter(adapter)
 
-        # Mock urllib inside adapter._call_api to simulate upstream 500 error containing the secret
+        # Mock ONLY upstream provider calls containing the canary
         http_error = urllib.error.HTTPError(
             url=f"https://api.deepseek.com/chat/completions?leak={secret_canary}",
             code=500,
@@ -575,7 +632,17 @@ def test_responder_public_response_sanitizes_upstream_errors_over_http(monkeypat
             fp=None,
         )
 
-        with patch("urllib.request.OpenerDirector.open", side_effect=http_error):
+        upstream_called = {"executed": False}
+        real_open = urllib.request.OpenerDirector.open
+
+        def selective_upstream_mock(self, fullurl, data=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+            url_str = fullurl.full_url if hasattr(fullurl, "full_url") else str(fullurl)
+            if "api.deepseek.com" in url_str:
+                upstream_called["executed"] = True
+                raise http_error
+            return real_open(self, fullurl, data=data, timeout=timeout)
+
+        with patch.object(urllib.request.OpenerDirector, "open", selective_upstream_mock):
             url = f"http://127.0.0.1:{server_port}/alerts"
             alert_payload = {
                 "status": "firing",
@@ -591,19 +658,22 @@ def test_responder_public_response_sanitizes_upstream_errors_over_http(monkeypat
             }
             code, data = _post_json_to_url(url, alert_payload)
 
-        # Check response over HTTP
-        assert code in (200, 500)
-        assert secret_canary not in json.dumps(data)
+            # Check that the /alerts handler was effectively executed and called the upstream provider
+            assert upstream_called["executed"] is True
+            assert code == 200
+            assert data.get("status") == "diagnosed"
+            assert data.get("diagnosis", {}).get("error_code") == "upstream_http_error_500"
+            assert secret_canary not in json.dumps(data)
 
-        # Check /status endpoint over HTTP
-        status_code, status_data = _get_json_from_url(f"http://127.0.0.1:{server_port}/status")
-        assert status_code == 200
-        assert secret_canary not in json.dumps(status_data)
+            # Check /status endpoint over HTTP
+            status_code, status_data = _get_json_from_url(f"http://127.0.0.1:{server_port}/status")
+            assert status_code == 200
+            assert secret_canary not in json.dumps(status_data)
 
-        # Check /incidents endpoint over HTTP
-        inc_code, inc_data = _get_json_from_url(f"http://127.0.0.1:{server_port}/incidents")
-        assert inc_code == 200
-        assert secret_canary not in json.dumps(inc_data)
+            # Check /incidents endpoint over HTTP
+            inc_code, inc_data = _get_json_from_url(f"http://127.0.0.1:{server_port}/incidents")
+            assert inc_code == 200
+            assert secret_canary not in json.dumps(inc_data)
     finally:
         server.shutdown()
         server.server_close()
@@ -617,17 +687,31 @@ def test_responder_public_response_sanitizes_upstream_errors_over_http(monkeypat
 
 
 def test_single_use_token_consumed_on_failed_repair_over_http(monkeypatch):
-    """Exercise real HTTP responder authorization flow:
-    1. Send alert to POST /alerts with HTTP repair enabled.
-    2. Obtain real single-use operator token for the incident.
-    3. Send first POST /authorize-repair with valid token; repair fails safely closed.
-    4. Send immediate second POST /authorize-repair with the same token;
-       verify server rejects it with HTTP 403 (authorization_denied) because token was consumed.
+    """Exercise real HTTP responder authorization flow completely offline:
+    1. Purges any inherited provider credentials from the environment.
+    2. Blocks all outbound network calls to the provider.
+    3. Sends alert to POST /alerts with HTTP repair enabled.
+    4. Obtains real single-use operator token for the incident.
+    5. Sends first POST /authorize-repair with valid token; repair fails safely closed.
+    6. Sends immediate second POST /authorize-repair with the same token;
+       verifies server rejects it with HTTP 403 (authorization_denied) because token was consumed.
     """
+    # 1. Purge any inherited API key from environment
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(IsolatedWorkerController, "is_available", classmethod(lambda cls: False))
+
     server = run_server("127.0.0.1", 0)
     server_port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+
+    real_open = urllib.request.OpenerDirector.open
+
+    def forbid_upstream_calls(self, fullurl, data=None, timeout=socket._GLOBAL_DEFAULT_TIMEOUT):
+        url_str = fullurl.full_url if hasattr(fullurl, "full_url") else str(fullurl)
+        if "api.deepseek.com" in url_str:
+            raise RuntimeError("FORBIDDEN_OUTBOUND_PROVIDER_CALL: test must be strictly offline")
+        return real_open(self, fullurl, data=data, timeout=timeout)
 
     try:
         reset_state()
@@ -638,48 +722,49 @@ def test_single_use_token_consumed_on_failed_repair_over_http(monkeypatch):
         adapter.write_capable_enabled = True
         set_active_adapter(adapter)
 
-        # 1. Fire alert over HTTP
-        url_alerts = f"http://127.0.0.1:{server_port}/alerts"
-        alert_payload = {
-            "status": "firing",
-            "alerts": [
-                {
-                    "status": "firing",
-                    "labels": {"alertname": EXPECTED_ALERT_NAME},
-                    "annotations": {"description": "Urgent task failure"},
-                    "startsAt": "2026-10-26T12:00:00Z",
-                    "fingerprint": "fp_http_single_use_test",
-                }
-            ],
-        }
-        code, alert_data = _post_json_to_url(url_alerts, alert_payload)
-        assert code == 200
-        incident_id = alert_data.get("incident_id")
-        assert incident_id is not None
+        with patch.object(urllib.request.OpenerDirector, "open", forbid_upstream_calls):
+            # 1. Fire alert over HTTP
+            url_alerts = f"http://127.0.0.1:{server_port}/alerts"
+            alert_payload = {
+                "status": "firing",
+                "alerts": [
+                    {
+                        "status": "firing",
+                        "labels": {"alertname": EXPECTED_ALERT_NAME},
+                        "annotations": {"description": "Urgent task failure"},
+                        "startsAt": "2026-10-26T12:00:00Z",
+                        "fingerprint": "fp_http_single_use_test",
+                    }
+                ],
+            }
+            code, alert_data = _post_json_to_url(url_alerts, alert_payload)
+            assert code == 200
+            incident_id = alert_data.get("incident_id")
+            assert incident_id is not None
 
-        # 2. Get real operator token
-        token = get_token_for_incident(incident_id)
-        assert token is not None
+            # 2. Get real operator token
+            token = get_token_for_incident(incident_id)
+            assert token is not None
 
-        # 3. First repair attempt over HTTP with valid token
-        url_repair = f"http://127.0.0.1:{server_port}/authorize-repair"
-        repair_payload = {
-            "incident_id": incident_id,
-            "confirm": True,
-        }
-        headers = {"X-Operator-Token": token}
+            # 3. First repair attempt over HTTP with valid token
+            url_repair = f"http://127.0.0.1:{server_port}/authorize-repair"
+            repair_payload = {
+                "incident_id": incident_id,
+                "confirm": True,
+            }
+            headers = {"X-Operator-Token": token}
 
-        code_repair_1, data_repair_1 = _post_json_to_url(url_repair, repair_payload, headers=headers)
-        assert code_repair_1 == 200
-        assert data_repair_1.get("status") == "repair_failed"
-        repair_res = data_repair_1.get("repair_result", {})
-        assert repair_res.get("status") == "blocked_missing_isolated_worker"
+            code_repair_1, data_repair_1 = _post_json_to_url(url_repair, repair_payload, headers=headers)
+            assert code_repair_1 == 200
+            assert data_repair_1.get("status") == "repair_failed"
+            repair_res = data_repair_1.get("repair_result", {})
+            assert repair_res.get("status") == "blocked_missing_isolated_worker"
 
-        # 4. Immediate second repair attempt over HTTP with the same token
-        code_repair_2, data_repair_2 = _post_json_to_url(url_repair, repair_payload, headers=headers)
-        assert code_repair_2 == 403
-        assert data_repair_2.get("error") == "authorization_denied"
-        assert "Invalid or expired operator authorization token" in data_repair_2.get("detail", "")
+            # 4. Immediate second repair attempt over HTTP with the same token
+            code_repair_2, data_repair_2 = _post_json_to_url(url_repair, repair_payload, headers=headers)
+            assert code_repair_2 == 403
+            assert data_repair_2.get("error") == "authorization_denied"
+            assert "Invalid or expired operator authorization token" in data_repair_2.get("detail", "")
     finally:
         set_http_repair_allowed(False)
         server.shutdown()
@@ -834,6 +919,7 @@ def test_deepseek_adapter_repair_strictly_blocked_even_with_env_var(monkeypatch,
     DeepSeekAgentAdapter.repair() fails closed with blocked_missing_isolated_worker
     and model_executed=False without executing any model code on the host.
     """
+    monkeypatch.setattr(IsolatedWorkerController, "is_available", classmethod(lambda cls: False))
     monkeypatch.setenv("TASKLANE_ISOLATED_WORKER_ENABLED", "true")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-mock-key")
 
