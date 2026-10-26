@@ -2,14 +2,21 @@
 
 Listens on port 8001 for local Grafana alerts.
 Guarantees:
-- Rejects malformed, oversized, resolved, or unrelated alerts.
+- Rejects malformed, oversized, or unrelated alerts.
 - Deduplicates rapid notifications to prevent overlapping repairs.
 - Performs strictly READ-ONLY diagnosis by default upon alert receipt.
-- Requires explicit operator approval via POST /authorize-repair for write-capable remediation.
-- Restricts writes exclusively to validated disposable workspaces.
+- Manages service-owned disposable workspaces bound to incident IDs.
+- Requires genuine single-use, incident-bound token authentication for repair authorization.
+- Strict boolean confirm check (rejects string 'false' or truthy non-booleans).
+- Atomic concurrency controls: at most one active repair at a time.
+- Handles Grafana resolved notifications cleanly without locking future incidents.
+- Returns fixed error codes and sanitized responses without raw exceptions or credentials.
 """
 import json
+import os
+import secrets
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +26,7 @@ from agent_adapter import BaseAgentAdapter, CodexAgentAdapter, MockAgentAdapter
 from collector import collect_incident_context
 from config import (
     DIAGNOSIS_TIMEOUT_SECONDS,
+    DISPOSABLE_SERVICE_DIR,
     EXPECTED_ALERT_NAME,
     LOKI_URL,
     MAX_PAYLOAD_BYTES,
@@ -27,15 +35,22 @@ from config import (
     RESPONDER_PORT,
     TEMPO_URL,
 )
-from sandbox import SecurityViolation, validate_safe_workspace_path
+from sandbox import (
+    SecurityViolation,
+    cleanup_disposable_workspace,
+    create_disposable_workspace,
+    get_registered_workspace,
+    reset_workspace_registry,
+    validate_safe_workspace_path,
+)
 
 # State store
 _lock = threading.Lock()
-_current_status = "idle"  # idle | diagnosing | diagnosed | repairing | repaired
+_current_status = "idle"  # idle | diagnosing | diagnosed | repairing | repaired | resolved
 _current_incident: Optional[Dict[str, Any]] = None
 _incident_history: List[Dict[str, Any]] = []
 
-# Active adapter (default to MockAgentAdapter, can be switched via set_adapter)
+# Active adapter (default to MockAgentAdapter for deterministic CI safety)
 _active_adapter: BaseAgentAdapter = MockAgentAdapter()
 
 
@@ -50,19 +65,56 @@ def set_active_adapter(adapter: BaseAgentAdapter) -> None:
 
 
 def reset_state() -> None:
-    """Reset server state for testing."""
+    """Reset server state and cleanup for testing."""
     global _current_status, _current_incident, _incident_history
     with _lock:
         _current_status = "idle"
         _current_incident = None
         _incident_history.clear()
+        reset_workspace_registry()
+
+
+def _get_token_path(incident_id: str) -> Path:
+    """Get path to the private single-use token file for an incident."""
+    return DISPOSABLE_SERVICE_DIR / f"auth_{incident_id}.token"
+
+
+def generate_incident_token(incident_id: str) -> str:
+    """Generate a single-use cryptographically secure authorization token for an incident."""
+    token = secrets.token_hex(32)
+    token_path = _get_token_path(incident_id)
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.write_text(token, encoding="utf-8")
+    if os.name != "nt":
+        try:
+            token_path.chmod(0o600)
+        except OSError:
+            pass
+    return token
+
+
+def verify_and_consume_token(incident_id: str, candidate_token: str) -> bool:
+    """Verify candidate token against stored token and immediately delete it (single-use)."""
+    token_path = _get_token_path(incident_id)
+    if not token_path.exists() or not candidate_token:
+        return False
+    try:
+        expected = token_path.read_text(encoding="utf-8").strip()
+        is_valid = secrets.compare_digest(expected, candidate_token.strip())
+        return is_valid
+    finally:
+        # Single-use: delete immediately regardless of match
+        try:
+            token_path.unlink()
+        except OSError:
+            pass
 
 
 class ResponderHandler(BaseHTTPRequestHandler):
     """HTTP Request handler for on-call responder endpoints."""
 
     def log_message(self, format, *args):
-        # Suppress noisy default logging; logs are kept bounded
+        # Suppress verbose default logging; logs are kept bounded
         return
 
     def send_json(self, status_code: int, data: Dict[str, Any]) -> None:
@@ -85,16 +137,35 @@ class ResponderHandler(BaseHTTPRequestHandler):
 
         if self.path == "/status":
             with _lock:
+                incident_summary = None
+                if _current_incident:
+                    incident_summary = {
+                        "incident_id": _current_incident.get("incident_id"),
+                        "alertname": _current_incident.get("alertname"),
+                        "status": _current_incident.get("status"),
+                        "write_authorized": _current_incident.get("write_authorized"),
+                        "has_correlated_evidence": _current_incident.get("has_correlated_evidence"),
+                    }
                 return self.send_json(200, {
                     "current_status": _current_status,
-                    "current_incident": _current_incident,
+                    "current_incident": incident_summary,
                     "adapter": get_active_adapter().adapter_name,
                 })
 
         if self.path == "/incidents":
             with _lock:
+                sanitized_history = []
+                for inc in _incident_history:
+                    sanitized_history.append({
+                        "incident_id": inc.get("incident_id"),
+                        "alertname": inc.get("alertname"),
+                        "status": inc.get("status"),
+                        "write_authorized": inc.get("write_authorized"),
+                        "has_correlated_evidence": inc.get("has_correlated_evidence"),
+                        "created_at": inc.get("created_at"),
+                    })
                 return self.send_json(200, {
-                    "incidents": list(_incident_history),
+                    "incidents": sanitized_history,
                 })
 
         return self.send_json(404, {"error": "not_found"})
@@ -110,7 +181,7 @@ class ResponderHandler(BaseHTTPRequestHandler):
         return self.send_json(404, {"error": "not_found"})
 
     def _handle_alert_webhook(self) -> None:
-        """Process incoming Grafana alert. Enforces read-only diagnosis."""
+        """Process incoming Grafana alert. Enforces read-only diagnosis by default."""
         global _current_status, _current_incident, _incident_history
 
         # 1. Payload size check
@@ -132,15 +203,9 @@ class ResponderHandler(BaseHTTPRequestHandler):
         except Exception:
             return self.send_json(400, {"error": "malformed_json"})
 
-        # 3. Validate status: only firing alerts trigger response
         status = payload.get("status")
-        if status != "firing":
-            return self.send_json(400, {
-                "error": "unsupported_alert_status",
-                "detail": f"Expected 'firing', received '{status}'",
-            })
 
-        # 4. Validate alertname: must contain EXPECTED_ALERT_NAME
+        # 3. Validate alertname: must contain EXPECTED_ALERT_NAME
         alerts = payload.get("alerts")
         if not isinstance(alerts, list) or not alerts:
             return self.send_json(400, {"error": "missing_alerts_list"})
@@ -159,10 +224,41 @@ class ResponderHandler(BaseHTTPRequestHandler):
                 "detail": f"No alert matching '{EXPECTED_ALERT_NAME}' found",
             })
 
-        # 5. Deduplication and concurrency guard
+        # 4. Handle resolved status
+        if status == "resolved":
+            with _lock:
+                if _current_incident:
+                    inc_id = _current_incident.get("incident_id")
+                    _current_incident["status"] = "resolved"
+                    _current_status = "resolved"
+                    # Clean up token if present
+                    _token_file = _get_token_path(inc_id) if inc_id else None
+                    if _token_file and _token_file.exists():
+                        try:
+                            _token_file.unlink()
+                        except OSError:
+                            pass
+                    return self.send_json(200, {
+                        "status": "resolved",
+                        "incident_id": inc_id,
+                        "detail": "Incident marked resolved by Grafana notification",
+                    })
+                else:
+                    return self.send_json(200, {
+                        "status": "acknowledged",
+                        "detail": "No active incident to resolve",
+                    })
+
+        # 5. Only firing alerts trigger diagnosis
+        if status != "firing":
+            return self.send_json(400, {
+                "error": "unsupported_alert_status",
+                "detail": f"Expected 'firing' or 'resolved', received '{status}'",
+            })
+
+        # 6. Deduplication and concurrency guard
         with _lock:
             if _current_status in ("diagnosing", "diagnosed", "repairing"):
-                # Duplicate notification for ongoing incident
                 return self.send_json(200, {
                     "status": "deduplicated",
                     "accepted": False,
@@ -177,9 +273,23 @@ class ResponderHandler(BaseHTTPRequestHandler):
                 "alertname": EXPECTED_ALERT_NAME,
                 "status": "diagnosing",
                 "write_authorized": False,
+                "created_at": time.time(),
             }
 
-        # 6. Read-only diagnosis execution
+        # 7. Provision private service disposable workspace
+        repo_root = Path(__file__).resolve().parents[1]
+        try:
+            workspace_path = create_disposable_workspace(repo_root, incident_id)
+        except Exception:
+            with _lock:
+                _current_status = "idle"
+                _current_incident = None
+            return self.send_json(500, {"error": "workspace_creation_failed"})
+
+        # 8. Generate single-use authorization token for local operator CLI
+        auth_token = generate_incident_token(incident_id)
+
+        # 9. Read-only diagnosis execution
         incident_context = collect_incident_context(PROMETHEUS_URL, LOKI_URL, TEMPO_URL, payload)
         diagnosis_result = get_active_adapter().diagnose(incident_context)
 
@@ -189,6 +299,8 @@ class ResponderHandler(BaseHTTPRequestHandler):
                 "status": "diagnosed",
                 "telemetry": incident_context,
                 "diagnosis": diagnosis_result,
+                "has_correlated_evidence": incident_context.get("has_correlated_evidence", False),
+                "workspace_path": str(workspace_path),
                 "write_authorized": False,  # STRICT: read-only by default
             })
             _incident_history.append(dict(_current_incident))
@@ -199,13 +311,31 @@ class ResponderHandler(BaseHTTPRequestHandler):
             "incident_id": incident_id,
             "read_only": True,
             "write_authorized": False,
+            "has_correlated_evidence": incident_context.get("has_correlated_evidence", False),
             "diagnosis": diagnosis_result,
         })
 
     def _handle_authorize_repair(self) -> None:
-        """Authorize write-capable remediation by an explicit local operator action."""
+        """Authorize write-capable remediation with strict authentication and incident binding.
+        
+        Enforces:
+        - X-Operator-Token header matching single-use incident token.
+        - Incident must exist and have status 'diagnosed'.
+        - Strict boolean confirm (rejects strings 'false' or non-booleans).
+        - Workspace is strictly service-managed (rejects arbitrary client paths).
+        - Atomic concurrency guard (at most one active repair).
+        """
         global _current_status, _current_incident, _incident_history
 
+        # 1. Header token authentication
+        auth_token = self.headers.get("X-Operator-Token", "").strip()
+        if not auth_token:
+            return self.send_json(401, {
+                "error": "authentication_required",
+                "detail": "Missing X-Operator-Token header",
+            })
+
+        # 2. Parse payload
         try:
             content_length = int(self.headers.get("Content-Length", 0))
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
@@ -214,53 +344,72 @@ class ResponderHandler(BaseHTTPRequestHandler):
         except Exception:
             return self.send_json(400, {"error": "invalid_payload"})
 
-        # Operator confirmation gate
-        operator = payload.get("operator")
-        confirm = payload.get("confirm", False)
-        workspace_path_str = payload.get("workspace_path")
+        incident_id = payload.get("incident_id")
+        if not incident_id:
+            return self.send_json(400, {"error": "missing_incident_id"})
 
-        if not operator or not confirm:
+        # 3. Strict boolean confirmation
+        confirm = payload.get("confirm")
+        if confirm is not True:  # STRICT: boolean identity check
             return self.send_json(403, {
                 "error": "authorization_denied",
-                "detail": "Explicit operator confirmation is required ('operator' and 'confirm: true')",
+                "detail": "Strict boolean confirmation required ('confirm': true)",
             })
 
-        if not workspace_path_str:
-            return self.send_json(400, {"error": "missing_workspace_path"})
-
-        # Validate disposable workspace containment
-        try:
-            safe_workspace = validate_safe_workspace_path(Path(workspace_path_str))
-        except SecurityViolation as sec_err:
+        # 4. Verify and immediately consume single-use token
+        if not verify_and_consume_token(incident_id, auth_token):
             return self.send_json(403, {
-                "error": "security_boundary_violation",
-                "detail": str(sec_err),
+                "error": "authorization_denied",
+                "detail": "Invalid or expired operator authorization token",
             })
 
+        # 5. Incident state validation and atomic concurrency lock
         with _lock:
-            _current_status = "repairing"
-            if _current_incident:
-                _current_incident["status"] = "repairing"
-                _current_incident["operator"] = operator
-                _current_incident["write_authorized"] = True
+            if not _current_incident or _current_incident.get("incident_id") != incident_id:
+                return self.send_json(404, {"error": "incident_not_found"})
 
-        # Execute remediation in disposable workspace
-        context = _current_incident.get("telemetry", {}) if _current_incident else {}
+            if _current_status != "diagnosed":
+                return self.send_json(409, {
+                    "error": "invalid_state",
+                    "detail": f"Incident state is '{_current_status}'; repair requires 'diagnosed'",
+                })
+
+            # Atomic transition to repairing
+            _current_status = "repairing"
+            _current_incident["status"] = "repairing"
+            _current_incident["write_authorized"] = True
+
+        # 6. Resolve service-registered workspace
+        registered_ws = get_registered_workspace(incident_id)
+        if not registered_ws or not registered_ws.exists():
+            with _lock:
+                _current_status = "repair_failed"
+                _current_incident["status"] = "repair_failed"
+            return self.send_json(500, {"error": "workspace_unavailable"})
+
+        # 7. Execute remediation in the registered disposable workspace
+        context = _current_incident.get("telemetry", {})
         try:
             repair_result = get_active_adapter().repair(
                 incident_context=context,
-                workspace_path=safe_workspace,
+                workspace_path=registered_ws,
                 operator_approved=True,
             )
-        except Exception as exc:
+        except Exception:
             repair_result = {
                 "status": "repair_exception",
-                "error": str(exc),
                 "tests_passed": False,
+                "error": "Remediation execution encountered an internal error",
             }
 
+        # 8. Update final state
         with _lock:
-            _current_status = "repaired" if repair_result.get("tests_passed") else "repair_failed"
+            tests_passed = repair_result.get("tests_passed", False)
+            http_verified = repair_result.get("http_verified", False)
+            no_defect = repair_result.get("status") == "no_defect_detected"
+            success = bool(tests_passed and (http_verified or no_defect))
+
+            _current_status = "repaired" if success else "repair_failed"
             if _current_incident:
                 _current_incident["status"] = _current_status
                 _current_incident["repair"] = repair_result
@@ -268,7 +417,7 @@ class ResponderHandler(BaseHTTPRequestHandler):
 
         return self.send_json(200, {
             "status": _current_status,
-            "operator": operator,
+            "incident_id": incident_id,
             "write_authorized": True,
             "repair_result": repair_result,
         })

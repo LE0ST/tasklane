@@ -1,6 +1,6 @@
 # Issue #4 — Autonomous On-Call Incident Responder & Bounded Remediation
 
-**Status:** Architecture, alert receiver, sandbox containment, replaceable agent adapter, and reproducible incident drill implemented and verified in branch `project1/oncall-responder`. Draft PR targets `main` referencing Issue #4.
+**Status:** Security-hardened architecture, authenticated local operator CLI, private service-owned workspace containment, structured telemetry correlation, and reproducible incident drill implemented and verified in branch `project1/oncall-responder`. Draft PR [#9](https://github.com/LE0ST/tasklane/pull/9) targets `main` referencing Issue #4.
 
 ---
 
@@ -10,11 +10,11 @@ According to the official **AI Dev Tools Zoomcamp 2026** course rubric:
 - **On-Call Agent (2 points):** An agent wakes up on an alert and **fixes the issue**. A passive webhook receiver that only outputs diagnostic logs is insufficient.
 
 TaskLane implements a bounded on-call remediation system adhering to least-privilege principles:
-1. **Wakes Up on Alert:** Receives local Grafana `TaskLane5xxRate` webhook notifications on `POST /alerts` (port 8001).
-2. **Read-Only Diagnosis by Default:** Queries local Prometheus, Loki, and Tempo to correlate metrics, structured logs, and trace IDs without granting file modification permissions.
-3. **Explicit Operator Authorization Gate:** Remediations can only execute when an operator explicitly authorizes write-capable execution via `POST /authorize-repair`.
-4. **Disposable Workspace Containment:** Defects are introduced and repaired strictly within isolated, temporary disposable workspaces. The main application checkout, `main` branch, Render production, and Neon database are **never** mutated.
-5. **Truthful Reporting:** CI runs use `MockAgentAdapter` for deterministic safety verification; the live `CodexAgentAdapter` is provided with strict sandbox and timeout guardrails.
+1. **Wakes Up on Alert:** Receives real local Grafana `TaskLane5xxRate` webhook notifications on `POST /alerts` (port 8001).
+2. **Read-Only Diagnosis by Default:** Correlates local Prometheus metrics (`tasklane_task_5xx_errors_total`), structured Loki logs (`{service_name="tasklane-api"}` for `/api/tasks` 5xx), and Tempo SERVER ERROR spans without granting write permissions (`write_authorized: false`).
+3. **Explicit Authenticated Operator Gate:** Write-capable remediation cannot be authorized over unauthenticated HTTP JSON. Requires genuine single-use, cryptographically random incident token authentication via dedicated local operator CLI (`operator_cli.py`) with strict boolean `confirm: true`.
+4. **Service-Owned Disposable Workspace Containment:** Defects are introduced and repaired strictly within private service-owned disposable directories (`tasklane_oncall_service`). Workspaces are registered to incident IDs. The root, unregistered paths, parent traversal, symlink escapes, and real repo are strictly rejected.
+5. **Truthful Reporting & Disclosures:** CI runs use `MockAgentAdapter` for deterministic safety verification (fixture marker rollback, not AI). Write-capable live model execution (`CodexAgentAdapter`) is kept explicitly **DISABLED** pending maintainer authorization.
 
 ---
 
@@ -25,21 +25,24 @@ flowchart TD
     subgraph Observability Stack
         Grafana["Grafana Alerting<br/>TaskLane5xxRate"]
         Prom["Prometheus (:9090)<br/>5xx Error Rate"]
-        Loki["Grafana Loki (:3100)<br/>Sanitized Request Logs"]
+        Loki["Grafana Loki (:3100)<br/>Structured Request Logs"]
         Tempo["Grafana Tempo (:3200)<br/>Trace Metadata"]
     end
 
-    subgraph Incident Response System (:8001)
+    subgraph Incident Response Subsystem (:8001)
         Receiver["Alert Receiver<br/>POST /alerts<br/>(Deduplication & Validation)"]
-        Collector["Telemetry Collector<br/>(Sanitizes & Correlates)"]
+        Collector["Telemetry Collector<br/>(Structured Loki + Tempo Validation)"]
         DiagGate["Read-Only Diagnosis<br/>(write_authorized: false)"]
-        AuthGate["Operator Approval Gate<br/>POST /authorize-repair<br/>(LE0ST confirmation)"]
-        Sandbox["Disposable Sandbox Runner<br/>(Path & Credential Containment)"]
+        TokenStore["Local Token Storage<br/>(auth_incident.token)"]
+        AuthGate["Operator Authorization Gate<br/>POST /authorize-repair<br/>(X-Operator-Token Header)"]
+        OpCLI["Local Operator CLI<br/>(operator_cli.py)"]
+        Registry["Workspace Registry<br/>(Incident ID -> Path)"]
+        Sandbox["Disposable Sandbox Runner<br/>(Env Allowlist & Process Isolation)"]
         Adapter["Agent Adapter<br/>(Mock / Codex CLI)"]
     end
 
-    subgraph Restricted Environment
-        DispWS["Disposable Workspace<br/>(/tmp/tasklane_disposable/...)<br/>Target: backend/main.py"]
+    subgraph Service-Owned Disposable Containment
+        DispWS["Disposable Workspace<br/>(tasklane_oncall_service/workspace_...)<br/>Target: backend/main.py"]
     end
 
     Grafana -->|POST /alerts (firing)| Receiver
@@ -49,11 +52,15 @@ flowchart TD
     Collector --> Tempo
     Collector --> DiagGate
     DiagGate -->|Read-Only| Adapter
+    Receiver -->|Generate Single-Use Token| TokenStore
+    Receiver -->|Register Workspace| Registry
 
-    AuthGate -->|Operator Token & Safe Path| Sandbox
-    Sandbox -->|Restricted Writes| Adapter
+    OpCLI -->|Read Local Token| TokenStore
+    OpCLI -->|Authenticated POST| AuthGate
+    AuthGate -->|Consume Token & Verify Registry| Sandbox
+    Sandbox -->|Isolated Child Process| Adapter
     Adapter -->|Apply Code Diff| DispWS
-    Sandbox -->|Run Pytest| DispWS
+    Sandbox -->|Run Pytest & HTTP Verification| DispWS
 ```
 
 ---
@@ -64,28 +71,84 @@ All incident response operations enforce strict defense-in-depth guardrails:
 
 | Control | Implementation | Verification |
 |:---|:---|:---|
-| **Webhook Input Validation** | `incident-response/responder.py` | Rejects payloads > 64KB, malformed JSON, `resolved` alerts, empty lists, and unrelated alerts (e.g. `CPUAlert`). |
+| **Webhook Input Validation** | `incident-response/responder.py` | Rejects payloads > 64KB, malformed JSON, empty lists, and unrelated alerts (e.g. `CPUAlert`). |
 | **Deduplication** | In-memory mutex state lock | Prevents duplicate firing notifications from initiating overlapping diagnostic or repair runs. |
 | **Read-Only Default** | Enforced in `_handle_alert_webhook()` | `POST /alerts` sets `write_authorized: false` and cannot modify source files or spawn write processes. |
-| **Operator Approval Gate** | `_handle_authorize_repair()` | Requires `operator: "LE0ST"` and `confirm: true`. Unconfirmed requests return HTTP 403. |
-| **Path Traversal Guard** | `validate_safe_workspace_path()` | Resolves realpaths; rejects parent escapes (`..`), symlinks outside base, and attempts to target the main checkout or system root. |
-| **Credential Sanitization** | `sanitize_process_environment()` | Purges `GITHUB_TOKEN`, `DATABASE_URL`, `RENDER_API_KEY`, and API secrets from child processes. |
-| **Forbidden Flags** | `run_sandboxed_command()` | Rejects `--dangerously-bypass-approvals-and-sandbox` unconditionally. |
-| **Process Timeouts** | Subprocess timeout enforcement | Bounded execution: 30s diagnosis timeout, 45s-60s command timeout. |
+| **Single-Use Token Auth** | `verify_and_consume_token()` | Requires `X-Operator-Token` header matching private single-use token file; consumed immediately to reject replays. |
+| **Strict Boolean Confirm** | `_handle_authorize_repair()` | Requires `confirm is True` (rejects strings `"false"`, `"true"`, or truthy non-booleans). |
+| **Workspace Ownership & Registry** | `validate_safe_workspace_path()` | Enforces registration binding to incident ID; rejects root itself, unregistered paths, parent escapes (`..`), and symlinks. |
+| **Source Copying Allowlist** | `create_disposable_workspace()` | Copies only required python code; excludes `.env`, credentials, virtualenvs, databases, and test hooks. |
+| **Minimal Environment Allowlist** | `sanitize_process_environment()` | Inherits only allowlisted system keys; purges `AWS_*`, `DATABASE_URL`, `TEST_DATABASE_URL`, `HOME`, `PYTHONPATH`. Rejects dangerous `extra_env`. |
+| **Forbidden Flags Guard** | `run_sandboxed_command()` | Rejects `--dangerously-bypass-approvals-and-sandbox`, `rm -rf /`, `sudo`, and shell fork bombs. |
+| **Process Timeouts & Output Bounding** | Subprocess timeout & truncation | Bounded buffers (64KB max) to prevent memory exhaustion; process termination on timeout. |
+| **Non-Root Container Execution** | `incident-response/Dockerfile` | Runs service under unprivileged user `oncall`. |
 
 ---
 
-## 4. Reproducible Local Commands
+## 4. Telemetry Correlation & Real Grafana Delivery
 
-### 4.1 Running Automated Unit & Security Tests
-Verify all 28 automated tests covering alert rejection, deduplication, path escape prevention, credential redaction, and mock remediation:
+### 4.1 Structured Loki Log & Tempo Span Validation
+The telemetry collector (`collector.py`) enforces rigorous evidence correlation:
+1. Queries Loki with `{service_name="tasklane-api"}` (not generic substrings).
+2. Parses structured JSON logs, filtering for `/api/tasks` routes with HTTP status codes 500–599.
+3. Extracts and normalizes the 32-character hex trace ID (rejecting all-zero dummy values).
+4. Queries Tempo `/api/traces/{trace_id}` and validates:
+   - Span kind is `SERVER` (2).
+   - Status code is `ERROR` (2).
+   - Attributes contain matching HTTP 5xx response status code.
+5. Missing evidence explicitly sets `has_correlated_evidence: false` with missing items listed; never silently passes as successful diagnosis.
 
-```bash
-uv run pytest incident-response/tests -v
+### 4.2 Real Grafana Delivery Verification
+The automated local stack CI pipeline verifies:
+1. `POST /api/tasks` triggers a local failure (503).
+2. Prometheus increments `tasklane_task_5xx_errors_total`.
+3. Grafana evaluates `TaskLane5xxRate` and fires.
+4. Grafana delivers webhook to `oncall-responder:8001/alerts`.
+5. Responder records read-only diagnosis with correlated Loki log and Tempo trace evidence.
+6. Alert resolves and responder updates state without locking future incidents.
+Verified by automated integration test: `incident-response/oncall_smoke.py`.
+
+---
+
+## 5. Deliberate Defect Fixture & Verified Recovery
+
+The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affecting valid urgent-priority task creation:
+```python
+# --- ONCALL-BUG-FIXTURE-START ---
+    if getattr(task_in.priority, "value", task_in.priority) == "urgent":
+        raise RuntimeError("UNCAUGHT REGRESSION: Failed to dispatch urgent task")
+# --- ONCALL-BUG-FIXTURE-END ---
 ```
 
-### 4.2 Running the End-to-End Incident Drill
-The standalone drill exercises the complete lifecycle in an isolated workspace:
+### Verified HTTP Before/After Behavior
+1. **Normal Task Creation:** `POST /api/tasks` with `priority="medium"` succeeds with HTTP 201 before and after repair.
+2. **Urgent Task Creation Before Repair:** Produces unhandled exception $\rightarrow$ **HTTP 500 Internal Server Error**.
+3. **Remediation:** Operator authorizes repair via local operator CLI $\rightarrow$ deterministic removal of defect marker $\rightarrow$ unified diff emitted $\rightarrow$ unit tests pass.
+4. **Urgent Task Creation After Repair:** Returns **HTTP 201 Created**.
+5. **Persistence Verification:** Querying the local database confirms the urgent task is persisted.
+
+---
+
+## 6. Truthful Attribution & Model Execution Disclosure
+
+- **CI Safety & Policy Determinism:** Continuous Integration environments use `MockAgentAdapter` to execute regression tests and sandbox boundary checks reliably without network flakes, API costs, or credential exposures.
+- **Mock Adapter Disclosure:** `MockAgentAdapter` is explicitly documented as a deterministic test fixture adapter that performs marker rollback for containment verification. It is **NOT** represented as an autonomous AI or LLM repair.
+- **Codex Agent Adapter:** `CodexAgentAdapter` is implemented with `--sandbox read-only` diagnosis and `--sandbox workspace-write` repair execution.
+- **Write-Capable Codex Execution Disabled:** In accordance with repository safety policies, write-capable Codex execution is **DISABLED** pending explicit maintainer authorization and verification of an independently isolated worker. No live write-capable model execution was performed.
+
+---
+
+## 7. Reproducible Local Commands
+
+### 7.1 Running Automated Unit & Security Tests
+Verify all 33 automated tests covering alert validation, single-use token auth, workspace registry, path traversal prevention, env allowlists, and mock remediation:
+
+```bash
+uv run --project backend pytest incident-response/tests -v
+```
+
+### 7.2 Running the End-to-End Incident Drill
+The standalone drill exercises the complete lifecycle in a service-registered disposable workspace:
 
 ```bash
 # Terminal 1: Start the on-call responder
@@ -95,17 +158,17 @@ python incident-response/responder.py 8001
 python incident-response/drill.py
 ```
 
-### 4.3 Running with Docker Compose Overlay
-To start the optional on-call responder container alongside the local observability stack:
+### 7.3 Running with Docker Compose Overlay
+Start the on-call responder alongside the local observability stack:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.observability.yml -f docker-compose.oncall.yml up --build -d
 ```
 
-Verify service status:
+Verify real Grafana delivery and telemetry correlation:
 ```bash
-curl -sf http://localhost:8001/health
-curl -sf http://localhost:8001/status
+python observability/incident_smoke.py
+python incident-response/oncall_smoke.py
 ```
 
 Tear down:
@@ -115,81 +178,21 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml -f dock
 
 ---
 
-## 5. Verified Incident Remediation Evidence
-
-The drill executes a verified 7-stage remediation workflow:
-
-```
-======================================================================
-TASKLANE ISSUE #4: AUTONOMOUS ON-CALL REMEDIATION DRILL
-======================================================================
-
-[Step 1/7] Checking on-call responder health...
- PASS: Responder online at http://127.0.0.1:8001 (service=tasklane-oncall-responder)
-
-[Step 2/7] Provisioning isolated disposable workspace with deterministic bug fixture...
- PASS: Disposable workspace created at: C:\Users\RENEC\AppData\Local\Temp\workspace_e67b21db4e68
- PASS: Bug fixture injected strictly in disposable copy (main checkout untouched).
-
-[Step 3/7] BEFORE: Verifying task creation failure in disposable workspace...
- PASS: Verified failing baseline: tests failed as expected due to injected defect.
-
-[Step 4/7] Simulating Grafana TaskLane5xxRate alert firing webhook...
- PASS: Alert received. Read-only diagnosis performed (adapter=mock_agent).
-       Root cause finding: Unhandled exception detected during task creation pipeline in backend/main.py
-       Write authorization: False (strictly denied by default)
-
-[Step 5/7] Requesting explicit operator repair authorization...
- PASS: Operator authorization granted by LE0ST.
- PASS: Repair executed in disposable workspace (status=repaired).
-
-[Step 6/7] REPAIR DIFF: Inspecting agent-produced modification...
---- BEGIN SANITIZED DIFF ---
-  --- a/main.py
-  +++ b/main.py
-  @@ -110,10 +110,6 @@
-       summary="Create a new task (strictly placed in backlog)",
-   )
-   def create_task(task_in: TaskCreate, db: Session = Depends(get_db)):
-  -# --- ONCALL-BUG-FIXTURE-START ---
-  -    if task.priority == "urgent":
-  -        raise RuntimeError("UNCAUGHT REGRESSION: Failed to dispatch urgent task")
---- END SANITIZED DIFF ---
- PASS: Verified genuine code modification applied to disposable workspace.
-
-[Step 7/7] AFTER: Verifying test suite passes and application recovers...
- PASS: All automated backend tests PASSED in the repaired disposable workspace.
- PASS: User-facing task creation behavior verified restored.
-
-======================================================================
-ON-CALL DRILL COMPLETED SUCCESSFULLY
-Adapter Used: mock_agent
-EVIDENCE NOTE: Executed with deterministic MockAgentAdapter (CI/policy compliant).
-======================================================================
-```
-
----
-
-## 6. Truthful Attribution & Model Execution Disclosure
-
-- **CI Determinism:** Continuous Integration environments use `MockAgentAdapter` to execute regression tests and sandbox boundary checks reliably without network flakes, API costs, or secret exposures.
-- **Genuine AI Integration:** `CodexAgentAdapter` is implemented in `incident-response/agent_adapter.py`, wrapping the authentic `codex exec` CLI with `--sandbox read-only` and `--sandbox workspace-write`.
-- **Known Limitations:**
-  - Automated non-interactive CLI invocations on Windows without background daemon setup may experience stdin waiting delays or require elevated AppContainer configurations.
-  - To prevent false claims of autonomous AI repairs, the system explicitly logs the active adapter name. Live LLM execution is reported as a candidate adapter rather than falsely claimed as the sole verification method.
-
----
-
-## 7. Evidence Checklist
+## 8. Evidence Checklist
 
 - [x] Lightweight local responder on port 8001 (`POST /alerts`, `GET /health`, `GET /status`, `POST /authorize-repair`)
-- [x] Rejection of malformed, oversized (>64KB), resolved, and unrelated alert payloads
+- [x] Rejection of malformed, oversized (>64KB), and unrelated alert payloads
 - [x] Deduplication of rapid notifications to prevent overlapping repairs
 - [x] Read-only diagnosis by default (`write_authorized: false`)
-- [x] Explicit operator authorization gate requiring confirmation from `LE0ST`
-- [x] Disposable workspace containment rejecting directory traversal and symlink escapes
-- [x] Environment variable sanitization stripping tokens and connection strings
-- [x] Deterministic task-creation bug fixture injected exclusively into disposable workspace
-- [x] End-to-end remediation drill demonstrating before/diagnosis/repair/verification/recovery
-- [x] 28 unit and security tests in `incident-response/tests`
-- [x] Zero regressions on existing backend unit tests, PostgreSQL integration, frontend build, Playwright E2E, and Issue #3 drill
+- [x] Unauthenticated HTTP repair removed; requires single-use incident token authentication via local operator CLI
+- [x] Strict boolean confirmation required (`confirm is True`)
+- [x] Service-owned workspace directory (`tasklane_oncall_service`) with incident registry
+- [x] Allowlist source copying excluding `.env`, credentials, venvs, databases, test hooks
+- [x] Minimal environment variable allowlist; purges `AWS_*`, `DATABASE_URL`, `TEST_DATABASE_URL`, `HOME`, `PYTHONPATH`
+- [x] Structured Loki query `{service_name="tasklane-api"}` with task route 5xx parsing
+- [x] Tempo SERVER ERROR span validation with 5xx status metadata
+- [x] Real Grafana webhook delivery to on-call responder verified (`oncall_smoke.py`)
+- [x] Defect fixture references `task_in.priority` and demonstrates real HTTP 500 before $\rightarrow$ 201 after + DB persistence
+- [x] Truthful disclosures: `MockAgentAdapter` is deterministic test fixture; live Codex write repair kept disabled
+- [x] 33 unit and security tests in `incident-response/tests` (100% passing)
+- [x] Zero regressions on existing 76 backend unit tests, PostgreSQL integration, frontend build, Playwright E2E, and Issue #3 drill

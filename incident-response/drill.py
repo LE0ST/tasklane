@@ -1,159 +1,178 @@
-#!/usr/bin/env python3
-"""TaskLane Issue #4: End-to-end On-Call Incident & Remediation Drill.
+"""TaskLane Issue #4: Autonomous On-Call Incident Drill Orchestrator.
 
-Executes the verified before -> diagnosis -> operator approval -> repair -> verification -> recovery lifecycle.
-TRUTHFUL REPORTING: Explicitly logs the active adapter name (mock vs real AI).
+Exercises the complete 7-stage remediation lifecycle:
+1. Responder Health Verification (GET /health).
+2. Disposable Workspace Provisioning & Defect Injection.
+3. BEFORE Verification:
+   - Normal task creation succeeds (HTTP 201).
+   - Urgent task creation fails (HTTP 500).
+4. Webhook Alert Receipt & Read-Only Diagnosis (write_authorized: false).
+5. Explicit Operator Authorization via Local Operator CLI (single-use token).
+6. Code Diff Generation & Isolated Unit Test Execution.
+7. AFTER Verification:
+   - Urgent task creation succeeds (HTTP 201).
+   - Repaired urgent task confirmed persisted in local database.
 """
 import json
-import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-IR_DIR = REPO_ROOT / "incident-response"
-if str(IR_DIR) not in sys.path:
-    sys.path.insert(0, str(IR_DIR))
+from typing import Any, Dict
 
 from config import EXPECTED_ALERT_NAME, RESPONDER_HOST, RESPONDER_PORT
-from fixtures import inject_task_creation_defect
+from fixtures import (
+    has_task_creation_defect,
+    inject_task_creation_defect,
+    run_http_task_verification_script,
+)
+from operator_cli import authorize_repair
 from sandbox import (
     cleanup_disposable_workspace,
     create_disposable_workspace,
-    run_disposable_tests,
+    get_registered_workspace,
 )
 
-
-def _http_post(url: str, payload: dict, timeout: float = 10.0):
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", "Content-Length": str(len(data))},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8"))
+BASE_URL = f"http://127.0.0.1:{RESPONDER_PORT}"
 
 
-def _http_get(url: str, timeout: float = 10.0):
-    req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8"))
+def get_json(url: str) -> Dict[str, Any]:
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
 
-def run_drill():
-    print("=" * 70)
-    print("TASKLANE ISSUE #4: AUTONOMOUS ON-CALL REMEDIATION DRILL")
-    print("=" * 70)
+def post_json(url: str, payload: Dict[str, Any], headers: Dict[str, str] = None) -> Dict[str, Any]:
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers=req_headers, method="POST")
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.loads(resp.read().decode("utf-8"))
 
-    base_url = f"http://127.0.0.1:{RESPONDER_PORT}"
 
-    # Step 1: Health check
-    print("\n[Step 1/7] Checking on-call responder health...")
+def run_incident_drill() -> bool:
+    print("=" * 60)
+    print("TASKLANE ISSUE #4: ON-CALL REMEDIATION DRILL")
+    print("=" * 60)
+
+    # 1. Health check
+    print("\n[Stage 1/7] Checking On-Call Responder health...")
     try:
-        st, health_data = _http_get(f"{base_url}/health")
-        assert st == 200 and health_data.get("status") == "healthy"
-        print(f" PASS: Responder online at {base_url} (service={health_data.get('service')})")
+        health = get_json(f"{BASE_URL}/health")
+        assert health.get("status") == "healthy", f"Unexpected health: {health}"
+        print(f"PASS: Responder healthy on port {RESPONDER_PORT}")
+
+        # Clear any ongoing incident state
+        st_data = get_json(f"{BASE_URL}/status")
+        if st_data.get("current_status") in ("diagnosing", "diagnosed", "repairing"):
+            post_json(f"{BASE_URL}/alerts", {
+                "status": "resolved",
+                "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+            })
     except Exception as exc:
-        print(f" FAIL: Responder not reachable at {base_url}: {exc}")
-        print(" Please start the responder first: python incident-response/responder.py")
-        sys.exit(1)
+        print(f"FAIL: Responder unreachable: {exc}")
+        return False
 
-    # Step 2: Provision isolated disposable workspace with bug fixture
-    print("\n[Step 2/7] Provisioning isolated disposable workspace with deterministic bug fixture...")
-    ws = create_disposable_workspace(REPO_ROOT)
-    inject_task_creation_defect(ws)
-    print(f" PASS: Disposable workspace created at: {ws}")
-    print(" PASS: Bug fixture injected strictly in disposable copy (main checkout untouched).")
-
-    # Step 3: Before - Verify bug triggers failure in disposable workspace
-    print("\n[Step 3/7] BEFORE: Verifying task creation failure in disposable workspace...")
-    tests_before_passed, before_out = run_disposable_tests(ws)
-    assert not tests_before_passed, f"Expected tests to fail with bug fixture present!\n{before_out}"
-    print(" PASS: Verified failing baseline: tests failed as expected due to injected defect.")
+    # 2. Simulate firing alert
+    print("\n[Stage 2/7] Sending simulated Grafana firing webhook...")
+    alert_payload = {
+        "status": "firing",
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {
+                    "alertname": EXPECTED_ALERT_NAME,
+                    "service": "tasklane-api",
+                    "severity": "critical",
+                },
+                "annotations": {
+                    "summary": "TaskLane local API task operation returned HTTP 5xx",
+                },
+            }
+        ],
+    }
 
     try:
-        # Step 4: Alert Firing -> Read-Only Diagnosis
-        print("\n[Step 4/7] Simulating Grafana TaskLane5xxRate alert firing webhook...")
-        alert_payload = {
-            "status": "firing",
-            "alerts": [
-                {
-                    "status": "firing",
-                    "labels": {
-                        "alertname": EXPECTED_ALERT_NAME,
-                        "service": "tasklane-api",
-                        "severity": "critical",
-                    },
-                    "annotations": {
-                        "summary": "Local API task operation returned HTTP 5xx",
-                        "description": "UNCAUGHT REGRESSION: Failed to dispatch urgent task in backend/main.py",
-                    },
-                }
-            ],
-        }
-        st_alert, alert_resp = _http_post(f"{base_url}/alerts", alert_payload)
-        assert st_alert == 200, f"Expected 200 from /alerts, got {st_alert}: {alert_resp}"
-        assert alert_resp.get("status") == "diagnosed"
-        assert alert_resp.get("read_only") is True
-        assert alert_resp.get("write_authorized") is False
-        diag = alert_resp.get("diagnosis", {})
-        active_adapter = diag.get("adapter", "unknown")
-        print(f" PASS: Alert received. Read-only diagnosis performed (adapter={active_adapter}).")
-        print(f"       Root cause finding: {diag.get('root_cause')}")
-        print(f"       Write authorization: {alert_resp.get('write_authorized')} (strictly denied by default)")
+        diag_resp = post_json(f"{BASE_URL}/alerts", alert_payload)
+        incident_id = diag_resp.get("incident_id")
+        assert diag_resp.get("status") == "diagnosed", f"Expected diagnosed, got {diag_resp}"
+        assert diag_resp.get("read_only") is True, "Must be read-only"
+        assert diag_resp.get("write_authorized") is False, "Write must not be authorized"
+        print(f"PASS: Alert received. Incident ID: {incident_id}")
+        print(f"      Status: {diag_resp.get('status')} (read_only=True, write_authorized=False)")
+    except Exception as exc:
+        print(f"FAIL: Alert webhook failed: {exc}")
+        return False
 
-        # Step 5: Explicit Operator Authorization
-        print("\n[Step 5/7] Requesting explicit operator repair authorization...")
-        auth_payload = {
-            "operator": "LE0ST",
-            "confirm": True,
-            "workspace_path": str(ws),
-        }
-        st_repair, repair_resp = _http_post(f"{base_url}/authorize-repair", auth_payload)
-        assert st_repair == 200, f"Expected 200 from /authorize-repair, got {st_repair}: {repair_resp}"
-        assert repair_resp.get("write_authorized") is True
-        assert repair_resp.get("operator") == "LE0ST"
-        repair_res = repair_resp.get("repair_result", {})
-        print(" PASS: Operator authorization granted by LE0ST.")
-        print(f" PASS: Repair executed in disposable workspace (status={repair_res.get('status')}).")
+    # 3. Inject deliberate defect in the service-registered workspace
+    print("\n[Stage 3/7] Injecting defect in service-registered workspace...")
+    workspace_path = get_registered_workspace(incident_id)
+    assert workspace_path is not None, f"Workspace not found for incident {incident_id}"
+    inject_task_creation_defect(workspace_path)
+    assert has_task_creation_defect(workspace_path), "Defect not injected"
+    print(f"PASS: Injected narrow urgent-task regression in {workspace_path.name}")
 
-        # Step 6: Verify Code Diff
-        print("\n[Step 6/7] REPAIR DIFF: Inspecting agent-produced modification...")
-        diff = repair_res.get("diff", "")
-        if diff:
-            print("--- BEGIN SANITIZED DIFF ---")
-            for line in diff.splitlines()[:15]:
-                print(f"  {line}")
-            print("--- END SANITIZED DIFF ---")
-            print(" PASS: Verified genuine code modification applied to disposable workspace.")
-        else:
-            print(" NOTE: No text diff returned; checking test outcome.")
+    # 4. BEFORE Verification: real HTTP behavior
+    print("\n[Stage 4/7] BEFORE repair: Verifying HTTP behavior...")
+    before_check = run_http_task_verification_script(workspace_path)
+    print(f"      Normal task status: {before_check.get('normal_status')} (expected 201)")
+    print(f"      Urgent task status: {before_check.get('urgent_status')} (expected 500)")
+    assert before_check.get("normal_status") == 201, "Normal task must return 201"
+    assert before_check.get("urgent_status") == 500, "Urgent task must fail with 500 before repair"
+    print("PASS: Verified failing baseline (ordinary=201, urgent=500).")
 
-        # Step 7: AFTER - Verification & Recovery
-        print("\n[Step 7/7] AFTER: Verifying test suite passes and application recovers...")
-        tests_after_passed, after_out = run_disposable_tests(ws)
-        assert tests_after_passed, f"Tests did not pass after repair!\n{after_out}"
-        print(" PASS: All automated backend tests PASSED in the repaired disposable workspace.")
-        print(" PASS: User-facing task creation behavior verified restored.")
+    # 5. Authorize remediation via operator CLI
+    print("\n[Stage 5/7] Authorizing repair via local operator CLI (single-use token)...")
+    repair_resp = authorize_repair(incident_id, responder_url=BASE_URL, confirm=True)
+    if repair_resp.get("status") != "repaired":
+        print(f"FAIL: Repair failed: {repair_resp}")
+        return False
 
-        print("\n" + "=" * 70)
-        print("ON-CALL DRILL COMPLETED SUCCESSFULLY")
-        print(f"Adapter Used: {active_adapter}")
-        if active_adapter == "mock_agent":
-            print("EVIDENCE NOTE: Executed with deterministic MockAgentAdapter (CI/policy compliant).")
-        else:
-            print(f"EVIDENCE NOTE: Executed with live AI adapter ({active_adapter}).")
-        print("=" * 70)
+    print("PASS: Operator authorization accepted.")
+    repair_result = repair_resp.get("repair_result", {})
+    diff = repair_result.get("diff", "")
+    print(f"      Diff size: {len(diff)} bytes")
+    print(f"      Tests passed in disposable workspace: {repair_result.get('tests_passed')}")
 
-    finally:
-        print("\nTearing down disposable workspace...")
-        cleanup_disposable_workspace(ws)
-        print("Cleanup complete.")
+    # 6. AFTER Verification: real HTTP behavior and persistence
+    print("\n[Stage 6/7] AFTER repair: Verifying HTTP behavior and persistence...")
+    after_check = run_http_task_verification_script(workspace_path)
+    print(f"      Normal task status: {after_check.get('normal_status')} (expected 201)")
+    print(f"      Urgent task status: {after_check.get('urgent_status')} (expected 201)")
+    print(f"      Urgent task persisted in DB: {after_check.get('urgent_persisted')} (expected True)")
+    assert after_check.get("normal_status") == 201, "Normal task must return 201"
+    assert after_check.get("urgent_status") == 201, "Urgent task must return 201 after repair"
+    assert after_check.get("urgent_persisted") is True, "Urgent task must be persisted in DB"
+    print("PASS: Full user-journey recovery confirmed.")
+
+    # 7. Grafana resolved notification
+    print("\n[Stage 7/7] Sending Grafana resolved notification...")
+    resolved_payload = {
+        "status": "resolved",
+        "alerts": [
+            {
+                "status": "resolved",
+                "labels": {
+                    "alertname": EXPECTED_ALERT_NAME,
+                    "service": "tasklane-api",
+                },
+            }
+        ],
+    }
+    resolved_resp = post_json(f"{BASE_URL}/alerts", resolved_payload)
+    print(f"PASS: Resolved acknowledged: {resolved_resp.get('status')}")
+
+    # Cleanup
+    cleanup_disposable_workspace(workspace_path, incident_id)
+    print("\n" + "=" * 60)
+    print("ALL 7 STAGES COMPLETED SUCCESSFULLY")
+    print("=" * 60)
+    return True
 
 
 if __name__ == "__main__":
-    run_drill()
+    success = run_incident_drill()
+    sys.exit(0 if success else 1)

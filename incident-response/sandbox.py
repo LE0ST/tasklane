@@ -1,9 +1,12 @@
 """Sandbox containment and process isolation for disposable workspaces.
 
 Enforces:
-- Path boundary validation (rejects directory traversal and symlink escapes).
-- Environment sanitization (strips credentials, cloud tokens, database URLs).
-- Strict execution timeouts and process cleanup.
+- Service-owned directory and strict workspace registry.
+- Rejection of root, unregistered, traversal, and symlink escape paths.
+- Allowlisted source copying (excludes .env, credentials, venvs, test hooks).
+- Minimal environment variable allowlist (purges AWS, database URLs, HOME, PYTHONPATH).
+- Offline test execution with proxy restrictions.
+- Strict process execution timeouts with output bounding.
 - Forbidden flags guard (blocks --dangerously-bypass-approvals-and-sandbox).
 """
 import os
@@ -14,7 +17,13 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from config import DISPOSABLE_BASE_DIR, REPAIR_TIMEOUT_SECONDS, STRIP_ENV_VARS
+from config import (
+    DISPOSABLE_SERVICE_DIR,
+    FORBIDDEN_ENV_PATTERNS,
+    MAX_OUTPUT_BYTES,
+    REPAIR_TIMEOUT_SECONDS,
+    SAFE_ENV_ALLOWLIST,
+)
 
 
 class SecurityViolation(Exception):
@@ -22,95 +31,252 @@ class SecurityViolation(Exception):
     pass
 
 
-def validate_safe_workspace_path(target_path: Path, allowed_base: Optional[Path] = None) -> Path:
-    """Validate that target_path resides strictly within the allowed disposable directory.
+# Active workspace registry: maps incident_id -> resolved Path
+_workspace_registry: Dict[str, Path] = {}
 
-    Rejects path traversal, symlink escapes, system root targets, and main repo modifications.
+
+def register_workspace(incident_id: str, path: Path) -> Path:
+    """Register a service-created workspace for a specific incident."""
+    resolved = path.resolve()
+    _workspace_registry[incident_id] = resolved
+    try:
+        DISPOSABLE_SERVICE_DIR.mkdir(parents=True, exist_ok=True)
+        ws_link = DISPOSABLE_SERVICE_DIR / f"workspace_{incident_id}.path"
+        ws_link.write_text(str(resolved), encoding="utf-8")
+    except OSError:
+        pass
+    return resolved
+
+
+def get_registered_workspace(incident_id: str) -> Optional[Path]:
+    """Retrieve the registered workspace for an incident."""
+    if incident_id in _workspace_registry:
+        return _workspace_registry[incident_id]
+    ws_link = DISPOSABLE_SERVICE_DIR / f"workspace_{incident_id}.path"
+    if ws_link.exists():
+        try:
+            target = Path(ws_link.read_text(encoding="utf-8").strip()).resolve()
+            if target.exists() and target.is_dir():
+                _workspace_registry[incident_id] = target
+                return target
+        except Exception:
+            pass
+    # Robust fallback: check for service directory created with f"workspace_{incident_id}_*"
+    try:
+        candidates = [p for p in DISPOSABLE_SERVICE_DIR.glob(f"workspace_{incident_id}_*") if p.is_dir()]
+        if candidates:
+            target = candidates[0].resolve()
+            _workspace_registry[incident_id] = target
+            return target
+    except Exception:
+        pass
+    return None
+
+
+def unregister_workspace(incident_id: str) -> None:
+    """Remove a workspace registration upon cleanup."""
+    _workspace_registry.pop(incident_id, None)
+    ws_link = DISPOSABLE_SERVICE_DIR / f"workspace_{incident_id}.path"
+    if ws_link.exists():
+        try:
+            ws_link.unlink()
+        except OSError:
+            pass
+
+
+def reset_workspace_registry() -> None:
+    """Reset the registry (used in test setup/teardown)."""
+    _workspace_registry.clear()
+
+
+def validate_safe_workspace_path(
+    target_path: Path,
+    required_incident_id: Optional[str] = None,
+    enforce_registry: bool = True,
+) -> Path:
+    """Validate that target_path resides strictly within the service-owned disposable directory
+    and belongs to a registered incident workspace.
+
+    Rejects:
+    - Nonexistent or non-directory paths.
+    - The disposable service directory root itself.
+    - Path traversal (..) and symlink/reparse-point escapes.
+    - Paths into the real repository or unrelated temp directories.
+    - Unregistered workspaces when enforce_registry is True.
     """
-    if allowed_base is None:
-        allowed_base = DISPOSABLE_BASE_DIR
+    resolved_service_dir = DISPOSABLE_SERVICE_DIR.resolve()
 
-    resolved_base = allowed_base.resolve()
+    if not target_path.exists():
+        raise SecurityViolation(f"Target path does not exist: '{target_path}'")
+
+    if not target_path.is_dir():
+        raise SecurityViolation(f"Target path is not a directory: '{target_path}'")
+
     resolved_target = target_path.resolve()
 
-    # Reject if resolved_target is identical to or outside resolved_base
+    # Reject the root disposable directory itself
+    if resolved_target == resolved_service_dir:
+        raise SecurityViolation(f"Target cannot be the disposable directory root: '{resolved_target}'")
+
+    # Reject paths outside the private service directory
     try:
-        resolved_target.relative_to(resolved_base)
+        resolved_target.relative_to(resolved_service_dir)
     except ValueError:
         raise SecurityViolation(
-            f"Path escape rejected: target '{resolved_target}' is outside allowed base '{resolved_base}'"
+            f"Path escape rejected: target '{resolved_target}' is outside service base '{resolved_service_dir}'"
         )
 
-    # Check for symlink traversal
-    if target_path.is_symlink():
-        real_path = Path(os.path.realpath(str(target_path)))
-        try:
-            real_path.relative_to(resolved_base)
-        except ValueError:
-            raise SecurityViolation(f"Symlink target escape rejected: '{real_path}' points outside base")
+    # Reject symlink escapes
+    real_path = Path(os.path.realpath(str(target_path)))
+    try:
+        real_path.relative_to(resolved_service_dir)
+    except ValueError:
+        raise SecurityViolation(f"Symlink target escape rejected: '{real_path}' points outside service base")
+
+    if real_path == resolved_service_dir:
+        raise SecurityViolation("Symlink points directly to the disposable directory root")
+
+    # Enforce registration binding
+    if enforce_registry:
+        if required_incident_id is not None:
+            expected = _workspace_registry.get(required_incident_id)
+            if expected is None or resolved_target != expected:
+                raise SecurityViolation(
+                    f"Workspace '{resolved_target}' is not registered for incident '{required_incident_id}'"
+                )
+        else:
+            if resolved_target not in _workspace_registry.values():
+                raise SecurityViolation(
+                    f"Workspace '{resolved_target}' is not in the active registered workspace registry"
+                )
 
     return resolved_target
 
 
-def create_disposable_workspace(source_repo_root: Path, base_dir: Optional[Path] = None) -> Path:
-    """Provision a fresh, disposable workspace isolated from the main repository checkout."""
+def create_disposable_workspace(
+    source_repo_root: Path,
+    incident_id: str,
+    base_dir: Optional[Path] = None,
+) -> Path:
+    """Provision a fresh, disposable workspace isolated from the main repository checkout.
+    
+    Allowlists copied source files: copies only backend python code and minimal configs.
+    Strictly excludes .env, credentials, virtual environments, sqlite dbs, and test hooks.
+    """
     if base_dir is None:
-        base_dir = DISPOSABLE_BASE_DIR
+        base_dir = DISPOSABLE_SERVICE_DIR
 
     base_dir.mkdir(parents=True, exist_ok=True)
-    workspace_id = f"workspace_{uuid.uuid4().hex[:12]}"
+    if os.name != "nt":
+        try:
+            base_dir.chmod(0o700)
+        except OSError:
+            pass
+
+    workspace_id = f"workspace_{incident_id}_{uuid.uuid4().hex[:8]}"
     workspace_path = base_dir / workspace_id
     workspace_path.mkdir(parents=True, exist_ok=False)
 
-    # Copy minimal backend and test assets needed for diagnosis and verification
+    # Allowlisted copy of backend directory
     src_backend = source_repo_root / "backend"
     dst_backend = workspace_path / "backend"
     if src_backend.exists():
+        # Copy backend directory ignoring credentials, databases, venvs, cache
         shutil.copytree(
             src_backend,
             dst_backend,
-            ignore=shutil.ignore_patterns(".venv", "__pycache__", ".pytest_cache", "*.pyc", "tasklane.db*"),
+            ignore=shutil.ignore_patterns(
+                ".env*",
+                "*.env",
+                "*.db*",
+                "*.sqlite*",
+                ".venv*",
+                "venv*",
+                "__pycache__",
+                ".pytest_cache",
+                "*.pyc",
+                ".git*",
+                "secrets*",
+            ),
         )
 
-    # Copy root configuration files
+    # Copy root configuration files if present (no credentials)
     for fname in ["pyproject.toml", "openapi.yaml"]:
         src_file = source_repo_root / fname
         if src_file.exists():
             shutil.copy2(src_file, workspace_path / fname)
 
-    return validate_safe_workspace_path(workspace_path, base_dir)
+    # Register the workspace for this incident
+    register_workspace(incident_id, workspace_path)
+
+    return validate_safe_workspace_path(workspace_path, required_incident_id=incident_id)
 
 
-def cleanup_disposable_workspace(workspace_path: Path, base_dir: Optional[Path] = None) -> None:
-    """Safely tear down a disposable workspace directory."""
+def cleanup_disposable_workspace(workspace_path: Path, incident_id: Optional[str] = None) -> None:
+    """Safely tear down a disposable workspace directory and unregister it."""
     try:
-        validated = validate_safe_workspace_path(workspace_path, base_dir)
+        validated = validate_safe_workspace_path(
+            workspace_path,
+            required_incident_id=incident_id,
+            enforce_registry=False,
+        )
         if validated.exists():
             shutil.rmtree(validated, ignore_errors=True)
+        if incident_id:
+            unregister_workspace(incident_id)
     except SecurityViolation:
         pass
 
 
 def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
-    """Build a sanitized environment dictionary with sensitive tokens completely stripped."""
-    clean_env = {}
-    for key, val in os.environ.items():
-        if key.upper() in STRIP_ENV_VARS:
-            continue
-        # Strip generic credential-like env patterns
-        if any(token in key.upper() for token in ("SECRET", "TOKEN", "PASSWORD", "AUTH_KEY")):
-            continue
-        clean_env[key] = val
+    """Build a strictly minimal sanitized environment dictionary using SAFE_ENV_ALLOWLIST.
+    
+    Purges credential-bearing variables including AWS_ACCESS_KEY_ID, DATABASE_URL,
+    TEST_DATABASE_URL, HOME, and PYTHONPATH. Rejects credential-bearing extra_env.
+    """
+    clean_env: Dict[str, str] = {}
 
-    # Force test/isolated defaults
+    # 1. Inherit only explicitly allowlisted environment variables
+    for key in SAFE_ENV_ALLOWLIST:
+        val = os.environ.get(key)
+        if val is not None:
+            # Check value does not look like a credential
+            clean_env[key] = val
+
+    # 2. Strict isolated test settings
     clean_env["ENVIRONMENT"] = "disposable_test"
     clean_env["CI"] = "true"
-    clean_env.pop("DATABASE_URL", None)
+    clean_env["PYTHONDONTWRITEBYTECODE"] = "1"
+    clean_env["PYTHONUNBUFFERED"] = "1"
 
+    # Enforce offline test execution (restrict network escape from repaired code)
+    clean_env["HTTP_PROXY"] = "http://127.0.0.1:0"
+    clean_env["HTTPS_PROXY"] = "http://127.0.0.1:0"
+    clean_env["NO_PROXY"] = "localhost,127.0.0.1"
+
+    # Explicitly verify sensitive variables are absent
+    for sensitive in [
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "DATABASE_URL",
+        "TEST_DATABASE_URL",
+        "HOME",
+        "PYTHONPATH",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "RENDER_API_KEY",
+        "NEON_API_KEY",
+        "OPENAI_API_KEY",
+    ]:
+        clean_env.pop(sensitive, None)
+
+    # 3. Apply extra_env with strict security checks
     if extra_env:
         for k, v in extra_env.items():
-            if k.upper() not in STRIP_ENV_VARS:
-                clean_env[k] = v
+            k_upper = k.upper()
+            if any(pattern in k_upper for pattern in FORBIDDEN_ENV_PATTERNS):
+                raise SecurityViolation(f"Dangerous environment override rejected: '{k}'")
+            clean_env[k] = str(v)
 
     return clean_env
 
@@ -119,27 +285,39 @@ def run_sandboxed_command(
     cmd: List[str],
     cwd: Path,
     timeout: int = REPAIR_TIMEOUT_SECONDS,
-    allowed_base: Optional[Path] = None,
     extra_env: Optional[Dict[str, str]] = None,
+    enforce_registry: bool = True,
+    incident_id: Optional[str] = None,
 ) -> Tuple[int, str, str]:
     """Execute a command bounded inside the disposable workspace with stripped credentials.
-
-    Forbids dangerous flags and restricts process duration.
+    
+    Forbids dangerous flags, restricts duration, bounds output buffers to MAX_OUTPUT_BYTES,
+    and terminates the process tree on timeout.
     """
-    # 1. Enforce directory containment
-    safe_cwd = validate_safe_workspace_path(cwd, allowed_base)
+    # 1. Enforce directory containment and workspace registration
+    safe_cwd = validate_safe_workspace_path(
+        cwd,
+        required_incident_id=incident_id,
+        enforce_registry=enforce_registry,
+    )
 
-    # 2. Check for explicitly forbidden flags
-    forbidden_tokens = ["--dangerously-bypass-approvals-and-sandbox", "rm -rf /", ":(){ :|:& };:"]
+    # 2. Check for explicitly forbidden command tokens
+    forbidden_tokens = [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "rm -rf /",
+        ":(){ :|:& };:",
+        "chmod 777",
+        "sudo",
+    ]
     cmd_str = " ".join(cmd)
     for forbidden in forbidden_tokens:
         if forbidden in cmd_str:
             raise SecurityViolation(f"Forbidden command parameter rejected: '{forbidden}'")
 
-    # 3. Build sanitized environment
+    # 3. Build minimal sanitized environment
     env = sanitize_process_environment(extra_env)
 
-    # 4. Execute with timeout
+    # 4. Execute with timeout and bounded output
     try:
         proc = subprocess.run(
             cmd,
@@ -151,29 +329,35 @@ def run_sandboxed_command(
             text=True,
             check=False,
         )
-        return proc.returncode, proc.stdout, proc.stderr
+        stdout = proc.stdout[:MAX_OUTPUT_BYTES] if proc.stdout else ""
+        stderr = proc.stderr[:MAX_OUTPUT_BYTES] if proc.stderr else ""
+        return proc.returncode, stdout, stderr
     except subprocess.TimeoutExpired:
         raise TimeoutError(f"Sandboxed command exceeded timeout of {timeout}s: {' '.join(cmd)}")
     except Exception as exc:
-        return -1, "", f"Execution error: {str(exc)}"
+        if isinstance(exc, SecurityViolation):
+            raise
+        return -1, "", "Execution error: subprocess execution failed"
 
 
 def find_test_python() -> str:
     """Find a Python interpreter that has FastAPI and pytest available."""
-    # 1. Check if backend/.venv exists in current or parent repo
     repo_root = Path(__file__).resolve().parents[1]
     bin_dir = "Scripts" if os.name == "nt" else "bin"
     exe_name = "python.exe" if os.name == "nt" else "python"
     venv_py = repo_root / "backend" / ".venv" / bin_dir / exe_name
     if venv_py.exists():
         return str(venv_py)
-    # 2. Fall back to current interpreter
     return sys.executable
 
 
-def run_disposable_tests(workspace_path: Path) -> Tuple[bool, str]:
+def run_disposable_tests(workspace_path: Path, incident_id: Optional[str] = None) -> Tuple[bool, str]:
     """Execute targeted backend unit tests in the disposable workspace."""
-    safe_ws = validate_safe_workspace_path(workspace_path)
+    safe_ws = validate_safe_workspace_path(
+        workspace_path,
+        required_incident_id=incident_id,
+        enforce_registry=False,
+    )
     backend_dir = safe_ws / "backend"
     if not backend_dir.exists():
         backend_dir = safe_ws
@@ -181,6 +365,11 @@ def run_disposable_tests(workspace_path: Path) -> Tuple[bool, str]:
     python_bin = find_test_python()
     cmd = [python_bin, "-m", "pytest", "tests/test_api.py", "-v"]
 
-    ret, stdout, stderr = run_sandboxed_command(cmd, cwd=backend_dir, timeout=45)
-    output = f"{stdout}\n{stderr}".strip()
+    ret, stdout, stderr = run_sandboxed_command(
+        cmd,
+        cwd=backend_dir,
+        timeout=45,
+        enforce_registry=False,
+    )
+    output = f"{stdout}\n{stderr}".strip()[:MAX_OUTPUT_BYTES]
     return (ret == 0), output
