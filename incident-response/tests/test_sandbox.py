@@ -203,22 +203,89 @@ def test_sanitize_process_environment_rejects_unsafe_overrides():
         assert "Unsafe environment override rejected" in str(exc_info.value)
 
 
-def test_prune_stale_resources(tmp_path):
-    # Create several fake workspaces
-    created = []
-    for i in range(MAX_WORKSPACES_RETAINED + 3):
-        fake_ws = DISPOSABLE_SERVICE_DIR / f"workspace_prune_test_{i}"
-        fake_ws.mkdir(parents=True, exist_ok=True)
-        register_workspace(f"prune-inc-{i}", fake_ws)
-        created.append(fake_ws)
+def test_prune_stale_resources_with_100_synthetic_entries(tmp_path):
+    """Test scale retention: prune exactly down to MAX_WORKSPACES_RETAINED from 100 entries,
+    ensuring directory, path link, token file, and registry entries are all purged.
+    """
+    import shutil
+    created_dirs = []
+    created_tokens = []
+    created_links = []
 
     try:
+        # Create 100 synthetic resource entries
+        for i in range(100):
+            inc_id = f"scale_{i:03d}"
+            ws_dir = DISPOSABLE_SERVICE_DIR / f"workspace_{inc_id}_fake"
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            register_workspace(inc_id, ws_dir)
+
+            token_file = DISPOSABLE_SERVICE_DIR / f"auth_{inc_id}.token"
+            token_file.write_text("fake_token", encoding="utf-8")
+
+            path_link = DISPOSABLE_SERVICE_DIR / f"workspace_{inc_id}.path"
+
+            created_dirs.append(ws_dir)
+            created_tokens.append(token_file)
+            created_links.append(path_link)
+
+        # Execute pruning
         prune_stale_resources(max_keep=MAX_WORKSPACES_RETAINED)
-        remaining = list(DISPOSABLE_SERVICE_DIR.glob("workspace_prune_test_*"))
-        assert len(remaining) <= MAX_WORKSPACES_RETAINED
+
+        # 1. Workspace directories must be capped at MAX_WORKSPACES_RETAINED
+        remaining_ws = list(DISPOSABLE_SERVICE_DIR.glob("workspace_scale_*"))
+        assert len([p for p in remaining_ws if p.is_dir()]) <= MAX_WORKSPACES_RETAINED
+
+        # 2. Path links must be capped at MAX_WORKSPACES_RETAINED
+        remaining_links = list(DISPOSABLE_SERVICE_DIR.glob("workspace_scale_*.path"))
+        assert len(remaining_links) <= MAX_WORKSPACES_RETAINED
+
+        # 3. Tokens must be capped at MAX_WORKSPACES_RETAINED
+        remaining_tokens = list(DISPOSABLE_SERVICE_DIR.glob("auth_scale_*.token"))
+        assert len(remaining_tokens) <= MAX_WORKSPACES_RETAINED
+
+        # 4. In-memory registry must not have stale entries for deleted workspaces
+        from sandbox import _workspace_registry
+        for inc_id, path in list(_workspace_registry.items()):
+            if inc_id.startswith("scale_"):
+                assert path.exists(), f"Stale in-memory registry entry found for deleted {inc_id}"
+
+    finally:
+        for ws in created_dirs:
+            if ws.exists():
+                shutil.rmtree(ws, ignore_errors=True)
+        for tf in created_tokens:
+            if tf.exists():
+                try:
+                    tf.unlink()
+                except OSError:
+                    pass
+        for pl in created_links:
+            if pl.exists():
+                try:
+                    pl.unlink()
+                except OSError:
+                    pass
+
+
+def test_create_disposable_workspace_enforces_cap_after_creation():
+    """Verify that create_disposable_workspace leaves at most MAX_WORKSPACES_RETAINED on disk."""
+    repo_root = Path(__file__).resolve().parents[2]
+    created = []
+
+    try:
+        # Create 5 workspaces sequentially
+        for i in range(5):
+            ws = create_disposable_workspace(repo_root, incident_id=f"cap_test_{i}")
+            created.append(ws)
+
+        # Total workspaces on disk matching pattern must NOT exceed MAX_WORKSPACES_RETAINED
+        active_ws = list(DISPOSABLE_SERVICE_DIR.glob("workspace_cap_test_*"))
+        assert len([p for p in active_ws if p.is_dir()]) <= MAX_WORKSPACES_RETAINED
     finally:
         for ws in created:
             if ws.exists():
                 import shutil
                 shutil.rmtree(ws, ignore_errors=True)
+
 

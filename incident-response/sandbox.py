@@ -100,8 +100,24 @@ def reset_workspace_registry() -> None:
     _workspace_registry.clear()
 
 
-def prune_stale_resources(max_keep: int = MAX_WORKSPACES_RETAINED) -> None:
-    """Clean up old disposable workspaces and expired tokens to bound resource accumulation."""
+def prune_stale_resources(
+    max_keep: int = MAX_WORKSPACES_RETAINED,
+    token_max_age_seconds: int = TOKEN_EXPIRATION_SECONDS,
+    workspace_max_age_seconds: int = 3600,
+) -> None:
+    """Clean up old disposable workspaces and expired tokens to bound resource accumulation.
+    
+    Guarantees:
+    1. Removes expired auth tokens (mtime > token_max_age_seconds).
+    2. Removes expired workspaces (mtime > workspace_max_age_seconds).
+    3. Enforces max_keep cap by removing oldest workspaces exceeding max_keep.
+    4. For every deleted workspace:
+       - Recursively removes directory.
+       - Unregisters from in-memory registry.
+       - Deletes path link file (workspace_<inc_id>.path).
+       - Deletes associated token file (auth_<inc_id>.token).
+    5. Cleans orphaned path link files and orphaned in-memory registry entries.
+    """
     if not DISPOSABLE_SERVICE_DIR.exists():
         return
 
@@ -109,36 +125,132 @@ def prune_stale_resources(max_keep: int = MAX_WORKSPACES_RETAINED) -> None:
 
     # 1. Prune expired auth tokens
     try:
-        for token_file in DISPOSABLE_SERVICE_DIR.glob("auth_*.token"):
+        for token_file in list(DISPOSABLE_SERVICE_DIR.glob("auth_*.token")):
             try:
                 mtime = token_file.stat().st_mtime
-                if now - mtime > TOKEN_EXPIRATION_SECONDS:
+                if now - mtime > token_max_age_seconds:
                     token_file.unlink()
             except OSError:
                 pass
     except Exception:
         pass
 
-    # 2. Prune old workspaces exceeding max_keep
+    def _purge_workspace_entry(ws_dir: Path) -> None:
+        try:
+            inc_id = None
+            ws_resolved = ws_dir.resolve()
+            # 1. Try in-memory registry
+            for k, v in list(_workspace_registry.items()):
+                try:
+                    if v.resolve() == ws_resolved:
+                        inc_id = k
+                        break
+                except Exception:
+                    pass
+
+            # 2. Try .path link files
+            if not inc_id:
+                for path_link in DISPOSABLE_SERVICE_DIR.glob("workspace_*.path"):
+                    try:
+                        if Path(path_link.read_text(encoding="utf-8").strip()).resolve() == ws_resolved:
+                            inc_id = path_link.stem.replace("workspace_", "", 1)
+                            break
+                    except OSError:
+                        pass
+
+            # 3. Fallback to parsing directory name: workspace_<incident_id>_<suffix> or workspace_<incident_id>
+            if not inc_id and ws_dir.name.startswith("workspace_"):
+                remainder = ws_dir.name[len("workspace_"):]
+                if "_" in remainder:
+                    inc_id = remainder.rsplit("_", 1)[0]
+                else:
+                    inc_id = remainder
+
+            if ws_dir.exists():
+                shutil.rmtree(ws_dir, ignore_errors=True)
+
+            if inc_id:
+                unregister_workspace(inc_id)
+                token_file = DISPOSABLE_SERVICE_DIR / f"auth_{inc_id}.token"
+                if token_file.exists():
+                    try:
+                        token_file.unlink()
+                    except OSError:
+                        pass
+        except Exception:
+            pass
+
+    # 2. Collect all workspace directories
     try:
         workspaces = [
             p for p in DISPOSABLE_SERVICE_DIR.glob("workspace_*")
             if p.is_dir()
         ]
-        if len(workspaces) > max_keep:
-            # Sort by modification time, oldest first
-            workspaces.sort(key=lambda p: p.stat().st_mtime)
-            to_remove = workspaces[: len(workspaces) - max_keep]
+
+        # 3. Remove expired workspaces
+        surviving_workspaces = []
+        for ws in workspaces:
+            try:
+                if now - ws.stat().st_mtime > workspace_max_age_seconds:
+                    _purge_workspace_entry(ws)
+                else:
+                    surviving_workspaces.append(ws)
+            except OSError:
+                pass
+
+        # 4. Enforce max_keep cap on surviving workspaces
+        if len(surviving_workspaces) > max_keep:
+            surviving_workspaces.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0)
+            to_remove = surviving_workspaces[: len(surviving_workspaces) - max_keep]
             for ws in to_remove:
+                _purge_workspace_entry(ws)
+    except Exception:
+        pass
+
+    # 5. Clean orphaned .path files and dangling registry entries
+    try:
+        for path_link in list(DISPOSABLE_SERVICE_DIR.glob("workspace_*.path")):
+            try:
+                target_str = path_link.read_text(encoding="utf-8").strip()
+                target_path = Path(target_str)
+                if not target_path.exists():
+                    path_link.unlink()
+                    inc_id = path_link.stem.replace("workspace_", "", 1)
+                    _workspace_registry.pop(inc_id, None)
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    # Clean in-memory registry entries whose paths don't exist
+    try:
+        stale_incidents = [
+            inc for inc, target in list(_workspace_registry.items())
+            if not target.exists()
+        ]
+        for inc in stale_incidents:
+            _workspace_registry.pop(inc, None)
+    except Exception:
+        pass
+
+    # 6. Clean orphaned auth tokens whose workspace/incident no longer exists
+    try:
+        active_incidents = set(_workspace_registry.keys())
+        for path_link in DISPOSABLE_SERVICE_DIR.glob("workspace_*.path"):
+            active_incidents.add(path_link.stem.replace("workspace_", "", 1))
+        for ws in DISPOSABLE_SERVICE_DIR.glob("workspace_*"):
+            if ws.is_dir():
+                rem = ws.name[len("workspace_"):]
+                if "_" in rem:
+                    active_incidents.add(rem.rsplit("_", 1)[0])
+                else:
+                    active_incidents.add(rem)
+
+        for token_file in list(DISPOSABLE_SERVICE_DIR.glob("auth_*.token")):
+            token_inc_id = token_file.stem.replace("auth_", "", 1)
+            if token_inc_id not in active_incidents:
                 try:
-                    shutil.rmtree(ws, ignore_errors=True)
-                    # Also remove corresponding path link if exists
-                    parts = ws.name.split("_")
-                    if len(parts) >= 2:
-                        inc_id = parts[1]
-                        ws_path_link = DISPOSABLE_SERVICE_DIR / f"workspace_{inc_id}.path"
-                        if ws_path_link.exists():
-                            ws_path_link.unlink()
+                    token_file.unlink()
                 except OSError:
                     pass
     except Exception:
@@ -255,11 +367,14 @@ def create_disposable_workspace(
     # Register the workspace for this incident
     register_workspace(incident_id, workspace_path)
 
+    # Enforce retention cap AFTER creation so total active count never exceeds MAX_WORKSPACES_RETAINED
+    prune_stale_resources(max_keep=MAX_WORKSPACES_RETAINED)
+
     return validate_safe_workspace_path(workspace_path, required_incident_id=incident_id)
 
 
 def cleanup_disposable_workspace(workspace_path: Path, incident_id: Optional[str] = None) -> None:
-    """Safely tear down a disposable workspace directory and unregister it."""
+    """Safely tear down a disposable workspace directory, associated token, and unregister it."""
     try:
         validated = validate_safe_workspace_path(
             workspace_path,
@@ -270,6 +385,12 @@ def cleanup_disposable_workspace(workspace_path: Path, incident_id: Optional[str
             shutil.rmtree(validated, ignore_errors=True)
         if incident_id:
             unregister_workspace(incident_id)
+            token_file = DISPOSABLE_SERVICE_DIR / f"auth_{incident_id}.token"
+            if token_file.exists():
+                try:
+                    token_file.unlink()
+                except OSError:
+                    pass
     except SecurityViolation:
         pass
 

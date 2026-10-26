@@ -6,10 +6,13 @@ CONTAINER VS HOST EXECUTION BOUNDARY:
 - When TaskLane on-call responder runs inside Docker (e.g. docker-compose.oncall.yml),
   authorization tokens are stored strictly within the container's private filesystem
   (/tmp/tasklane_oncall_service). Host processes cannot access container tokens.
+  DISCLOSURE: In normal default service mode, network-facing repair is disabled (repair_disabled).
+  Authorizing repair requires the responder container to be explicitly run with
+  TASKLANE_ALLOW_HTTP_REPAIR=true (e.g. during an authorized local remediation drill).
   Run the operator CLI inside the container via:
     docker exec tasklane-oncall-responder python operator_cli.py authorize --incident-id <ID> --confirm
 - When running standalone on the local machine (e.g. incident drill):
-  Run directly via:
+  Run with TASKLANE_ALLOW_HTTP_REPAIR=true on the responder, then authorize via:
     python incident-response/operator_cli.py authorize --incident-id <ID> --confirm
 
 Enforces:

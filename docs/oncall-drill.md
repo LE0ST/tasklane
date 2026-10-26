@@ -155,6 +155,11 @@ uv run --project backend pytest incident-response/tests -v
 ### 7.2 Dedicated Operator CLI (Container vs Host Boundary)
 The operator CLI provides an out-of-band path for authorized remediation.
 
+> [!IMPORTANT]
+> In normal default service mode, network-facing repair authorization is disabled (`repair_disabled`).
+> Authorizing repair via the operator CLI returns HTTP 403 `repair_disabled` unless the responder was
+> explicitly launched with `TASKLANE_ALLOW_HTTP_REPAIR=true` (as in an authorized local drill).
+
 - **When running inside Docker** (tokens reside in the container's private `/tmp/tasklane_oncall_service`):
   ```bash
   docker exec tasklane-oncall-responder python operator_cli.py authorize --incident-id <ID> --confirm

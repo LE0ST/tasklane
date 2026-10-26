@@ -49,6 +49,42 @@ from sandbox import (
     validate_safe_workspace_path,
 )
 
+class ProvisioningError(Exception):
+    """Raised when workspace creation or authorization token generation fails."""
+    pass
+
+
+class DiagnosticError(Exception):
+    """Raised when telemetry collection or adapter diagnosis fails."""
+    pass
+
+
+def extract_alert_occurrence_id(alert: Dict[str, Any]) -> str:
+    """Extract stable occurrence identity from Grafana alert item.
+    
+    Grafana alert webhooks provide:
+    - fingerprint: unique hash representing the alert rule and label set.
+    - startsAt: ISO timestamp when this specific firing occurrence began.
+    """
+    fingerprint = str(alert.get("fingerprint") or "").strip()
+    starts_at = str(alert.get("startsAt") or "").strip()
+    labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
+    alertname = str(labels.get("alertname") or EXPECTED_ALERT_NAME).strip()
+
+    # Check for explicit occurrence_id tag
+    explicit_id = alert.get("occurrence_id") or labels.get("occurrence_id")
+    if explicit_id:
+        return str(explicit_id).strip()
+
+    if fingerprint and starts_at:
+        return f"{fingerprint}_{starts_at}"
+    if starts_at:
+        return f"{alertname}_{starts_at}"
+    if fingerprint:
+        return f"{fingerprint}"
+    return f"{alertname}"
+
+
 # State store
 _lock = threading.Lock()
 _current_status = "idle"  # idle | diagnosing | diagnosed | repairing | repaired | resolved
@@ -170,6 +206,7 @@ class ResponderHandler(BaseHTTPRequestHandler):
                 if _current_incident:
                     incident_summary = {
                         "incident_id": _current_incident.get("incident_id"),
+                        "occurrence_id": _current_incident.get("occurrence_id"),
                         "alertname": _current_incident.get("alertname"),
                         "status": _current_incident.get("status"),
                         "write_authorized": _current_incident.get("write_authorized"),
@@ -188,6 +225,7 @@ class ResponderHandler(BaseHTTPRequestHandler):
                 for inc in _incident_history:
                     sanitized_history.append({
                         "incident_id": inc.get("incident_id"),
+                        "occurrence_id": inc.get("occurrence_id"),
                         "alertname": inc.get("alertname"),
                         "status": inc.get("status"),
                         "write_authorized": inc.get("write_authorized"),
@@ -254,39 +292,62 @@ class ResponderHandler(BaseHTTPRequestHandler):
                 "detail": f"No alert matching '{EXPECTED_ALERT_NAME}' found",
             })
 
+        occurrence_id = extract_alert_occurrence_id(matching_alert)
+
         # 4. Handle resolved status
         if status == "resolved":
             with _lock:
+                if not _current_incident:
+                    return self.send_json(200, {
+                        "status": "acknowledged",
+                        "detail": "No active incident to resolve",
+                    })
+
+                current_occ_id = _current_incident.get("occurrence_id")
+                # Cross-incident guard:
+                # If both current incident and incoming resolved notification have distinct occurrence IDs,
+                # reject stale resolution without altering active incident state!
+                if current_occ_id and occurrence_id and current_occ_id != occurrence_id:
+                    return self.send_json(200, {
+                        "status": "stale_resolution_ignored",
+                        "accepted": False,
+                        "detail": f"Stale resolution for occurrence '{occurrence_id}' ignored (active is '{current_occ_id}')",
+                        "active_incident_id": _current_incident.get("incident_id"),
+                        "active_status": _current_status,
+                    })
+
                 if _current_status == "repairing":
-                    # An active repair is underway! Do NOT abort repair or re-enable concurrent repair
-                    if _current_incident:
-                        _current_incident["resolved_pending"] = True
+                    # An active repair is underway for this occurrence! Do NOT abort repair or re-enable concurrent repair
+                    _current_incident["resolved_pending"] = True
                     return self.send_json(200, {
                         "status": "acknowledged",
                         "detail": "Repair currently in progress; resolution queued",
                     })
 
-                if _current_incident:
-                    inc_id = _current_incident.get("incident_id")
-                    _current_incident["status"] = "resolved"
-                    _current_status = "resolved"
-                    # Clean up token if present
-                    _token_file = _get_token_path(inc_id) if inc_id else None
-                    if _token_file and _token_file.exists():
-                        try:
-                            _token_file.unlink()
-                        except OSError:
-                            pass
-                    return self.send_json(200, {
-                        "status": "resolved",
-                        "incident_id": inc_id,
-                        "detail": "Incident marked resolved by Grafana notification",
-                    })
-                else:
-                    return self.send_json(200, {
-                        "status": "acknowledged",
-                        "detail": "No active incident to resolve",
-                    })
+                inc_id = _current_incident.get("incident_id")
+                _current_incident["status"] = "resolved"
+                _current_status = "resolved"
+
+                # Clean up resources for this incident
+                ws_path = _current_incident.get("workspace_path")
+                if ws_path:
+                    try:
+                        cleanup_disposable_workspace(Path(ws_path), inc_id)
+                    except Exception:
+                        pass
+                _token_file = _get_token_path(inc_id) if inc_id else None
+                if _token_file and _token_file.exists():
+                    try:
+                        _token_file.unlink()
+                    except OSError:
+                        pass
+
+                return self.send_json(200, {
+                    "status": "resolved",
+                    "incident_id": inc_id,
+                    "occurrence_id": current_occ_id,
+                    "detail": "Incident marked resolved by Grafana notification",
+                })
 
         # 5. Only firing alerts trigger diagnosis
         if status != "firing":
@@ -309,36 +370,69 @@ class ResponderHandler(BaseHTTPRequestHandler):
             _current_status = "diagnosing"
             _current_incident = {
                 "incident_id": incident_id,
+                "occurrence_id": occurrence_id,
                 "alertname": EXPECTED_ALERT_NAME,
                 "status": "diagnosing",
                 "write_authorized": False,
                 "created_at": time.time(),
             }
 
-        # 7. Provision private service disposable workspace
-        repo_root = Path(__file__).resolve().parents[1]
+        # 7-9. Exception-safe provisioning and read-only diagnosis
+        workspace_path = None
+        auth_token = None
         try:
-            workspace_path = create_disposable_workspace(repo_root, incident_id)
-        except Exception:
-            with _lock:
-                _current_status = "idle"
-                _current_incident = None
-            return self.send_json(500, {"error": "workspace_creation_failed"})
+            # In default read-only service mode, avoid unnecessary repair workspaces and tokens.
+            # Provision only when HTTP repair is explicitly enabled (e.g. for local drill / tests).
+            if is_http_repair_allowed():
+                try:
+                    repo_root = Path(__file__).resolve().parents[1]
+                    workspace_path = create_disposable_workspace(repo_root, incident_id)
+                except Exception as exc:
+                    raise ProvisioningError(f"workspace_creation_failed: {exc}") from exc
 
-        # 8. Generate single-use authorization token for local operator CLI
-        auth_token = generate_incident_token(incident_id)
+                try:
+                    auth_token = generate_incident_token(incident_id)
+                except Exception as exc:
+                    raise ProvisioningError(f"token_generation_failed: {exc}") from exc
 
-        # 9. Read-only diagnosis execution with exception safety
-        try:
-            incident_context = collect_incident_context(PROMETHEUS_URL, LOKI_URL, TEMPO_URL, payload)
-            diagnosis_result = get_active_adapter().diagnose(incident_context)
-        except Exception:
+            # Read-only diagnosis execution
+            try:
+                incident_context = collect_incident_context(PROMETHEUS_URL, LOKI_URL, TEMPO_URL, payload)
+                diagnosis_result = get_active_adapter().diagnose(incident_context)
+            except Exception as exc:
+                raise DiagnosticError(f"diagnosis_failed: {exc}") from exc
+
+        except Exception as exc:
+            # Cleanup ONLY resources belonging to this failing incident
+            if workspace_path:
+                try:
+                    cleanup_disposable_workspace(workspace_path, incident_id)
+                except Exception:
+                    pass
+            token_file = _get_token_path(incident_id)
+            if token_file.exists():
+                try:
+                    token_file.unlink()
+                except OSError:
+                    pass
+
+            # Atomic state reset ONLY if this incident is still the active diagnosing incident
             with _lock:
                 if _current_incident and _current_incident.get("incident_id") == incident_id:
                     if _current_status == "diagnosing":
                         _current_status = "idle"
                         _current_incident = None
-            return self.send_json(500, {"error": "diagnosis_failed"})
+
+            err_code = (
+                "token_generation_failed" if isinstance(exc, ProvisioningError) and "token" in str(exc)
+                else ("workspace_creation_failed" if isinstance(exc, ProvisioningError) and "workspace" in str(exc)
+                      else "diagnosis_failed")
+            )
+            return self.send_json(500, {
+                "error": err_code,
+                "incident_id": incident_id,
+                "detail": f"Provisioning or diagnosis failure: {exc}",
+            })
 
         # 10. Update state atomically, respecting mid-diagnosis resolution
         with _lock:
@@ -357,16 +451,18 @@ class ResponderHandler(BaseHTTPRequestHandler):
                     "status": "resolved",
                     "accepted": True,
                     "incident_id": incident_id,
+                    "occurrence_id": occurrence_id,
                     "detail": "Diagnosis completed after incident was resolved",
                 })
 
             _current_status = "diagnosed"
             _current_incident.update({
                 "status": "diagnosed",
+                "occurrence_id": occurrence_id,
                 "telemetry": incident_context,
                 "diagnosis": diagnosis_result,
                 "has_correlated_evidence": incident_context.get("has_correlated_evidence", False),
-                "workspace_path": str(workspace_path),
+                "workspace_path": str(workspace_path) if workspace_path else None,
                 "write_authorized": False,  # STRICT: read-only by default
             })
             _incident_history.append(dict(_current_incident))
@@ -377,6 +473,7 @@ class ResponderHandler(BaseHTTPRequestHandler):
             "status": "diagnosed",
             "accepted": True,
             "incident_id": incident_id,
+            "occurrence_id": occurrence_id,
             "read_only": True,
             "write_authorized": False,
             "has_correlated_evidence": incident_context.get("has_correlated_evidence", False),

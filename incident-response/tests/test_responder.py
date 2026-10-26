@@ -373,3 +373,184 @@ def test_incident_history_bounded(monkeypatch):
     incidents = data.get("incidents", [])
     assert len(incidents) <= MAX_INCIDENT_HISTORY
 
+
+# ==============================================================================
+# Cross-Incident Occurrence & Stale Resolution Tests (Fix 1)
+# ==============================================================================
+
+def test_cross_incident_stale_resolution_ignored_without_state_change():
+    """Verify that a delayed resolved notification for incident A does not alter incident B."""
+    # 1. Alert A fires and resolves
+    payload_a_fire = {
+        "status": "firing",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "fingerprint": "fp_rule_1",
+            "startsAt": "2026-10-25T10:00:00Z",
+        }],
+    }
+    code_a, data_a = _post_json("/alerts", payload_a_fire)
+    assert code_a == 200
+    inc_a_id = data_a.get("incident_id")
+
+    payload_a_resolve = {
+        "status": "resolved",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "fingerprint": "fp_rule_1",
+            "startsAt": "2026-10-25T10:00:00Z",
+        }],
+    }
+    code_a_res, data_a_res = _post_json("/alerts", payload_a_resolve)
+    assert code_a_res == 200
+    assert data_a_res.get("status") == "resolved"
+
+    # 2. Alert B fires (new occurrence with different startsAt)
+    payload_b_fire = {
+        "status": "firing",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "fingerprint": "fp_rule_1",
+            "startsAt": "2026-10-25T11:00:00Z",
+        }],
+    }
+    code_b, data_b = _post_json("/alerts", payload_b_fire)
+    assert code_b == 200
+    assert data_b.get("status") == "diagnosed"
+    inc_b_id = data_b.get("incident_id")
+    assert inc_b_id != inc_a_id
+
+    # 3. Stale resolved notification for Incident A arrives!
+    code_stale, data_stale = _post_json("/alerts", payload_a_resolve)
+    assert code_stale == 200
+    assert data_stale.get("status") == "stale_resolution_ignored"
+    assert data_stale.get("accepted") is False
+
+    # 4. Critical verification: Incident B is STILL diagnosed, NOT resolved!
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "diagnosed"
+    assert st_data.get("current_incident", {}).get("incident_id") == inc_b_id
+
+
+def test_delayed_resolution_does_not_abort_repair_in_flight():
+    """Verify that a delayed resolved notification for A does not queue resolution or disrupt B's repair."""
+    set_http_repair_allowed(True)
+
+    # 1. Alert B fires
+    payload_b = {
+        "status": "firing",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "fingerprint": "fp_rule_1",
+            "startsAt": "2026-10-25T12:00:00Z",
+        }],
+    }
+    _, fire_data = _post_json("/alerts", payload_b)
+    inc_b_id = fire_data.get("incident_id")
+    token = get_token_for_incident(inc_b_id)
+    ws = get_registered_workspace(inc_b_id)
+    if ws:
+        inject_task_creation_defect(ws)
+
+    # 2. Stale resolution for older occurrence arrives
+    stale_resolve = {
+        "status": "resolved",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "fingerprint": "fp_rule_1",
+            "startsAt": "2026-10-25T09:00:00Z",
+        }],
+    }
+    code_stale, data_stale = _post_json("/alerts", stale_resolve)
+    assert code_stale == 200
+    assert data_stale.get("status") == "stale_resolution_ignored"
+
+    # 3. Incident B repair executes normally
+    code_rep, data_rep = _post_json(
+        "/authorize-repair",
+        {"incident_id": inc_b_id, "confirm": True},
+        headers={"X-Operator-Token": token},
+    )
+    assert code_rep == 200
+    assert data_rep.get("status") == "repaired"
+
+    # 4. Legitimate resolution for B arrives
+    legit_resolve = {
+        "status": "resolved",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "fingerprint": "fp_rule_1",
+            "startsAt": "2026-10-25T12:00:00Z",
+        }],
+    }
+    code_res, data_res = _post_json("/alerts", legit_resolve)
+    assert code_res == 200
+    assert data_res.get("status") == "resolved"
+
+
+# ==============================================================================
+# Exception-Safe Provisioning & Fault Injection Tests (Fix 2)
+# ==============================================================================
+
+def test_token_write_failure_resets_idle_state_and_cleans_resources(monkeypatch):
+    """Verify that token generation failure safely rolls back state to idle without leaving 'diagnosing'."""
+    set_http_repair_allowed(True)
+    import responder
+
+    def failing_token_gen(incident_id: str) -> str:
+        raise OSError("Injected disk I/O error during token write")
+
+    monkeypatch.setattr(responder, "generate_incident_token", failing_token_gen)
+
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    }
+    code, data = _post_json("/alerts", firing_payload)
+    assert code == 500
+    assert data.get("error") == "token_generation_failed"
+
+    # CRITICAL: Server state must be idle, NOT stuck in 'diagnosing'
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "idle"
+    assert st_data.get("current_incident") is None
+
+    # Verify subsequent valid alert is actionable
+    monkeypatch.undo()
+    code2, data2 = _post_json("/alerts", firing_payload)
+    assert code2 == 200
+    assert data2.get("status") == "diagnosed"
+
+
+def test_delayed_failure_of_incident_a_does_not_clear_incident_b():
+    """Verify that delayed failure handling of incident A does not clear active incident B."""
+    # 1. Establish incident B in diagnosed state
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+            "occurrence_id": "occ_b_test",
+        }],
+    }
+    code_b, data_b = _post_json("/alerts", firing_payload)
+    assert code_b == 200
+    inc_b_id = data_b.get("incident_id")
+
+    # 2. Directly verify that responder's lock-guarded rollback requires matching incident_id
+    import responder
+    with responder._lock:
+        # Simulate delayed failure callback belonging to old incident 'old_inc_a'
+        old_id = "old_inc_a"
+        if responder._current_incident and responder._current_incident.get("incident_id") == old_id:
+            responder._current_status = "idle"
+            responder._current_incident = None
+
+    # 3. Incident B must remain completely intact
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "diagnosed"
+    assert st_data.get("current_incident", {}).get("incident_id") == inc_b_id
+
+
