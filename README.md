@@ -302,15 +302,17 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | [#2 — Correlated observability](https://github.com/LE0ST/tasklane/issues/2) | Closed | [PR #7](https://github.com/LE0ST/tasklane/pull/7), merged `cc9cce7` |
 | [#3 — User-impact alert and drill](https://github.com/LE0ST/tasklane/issues/3) | Closed | [PR #8](https://github.com/LE0ST/tasklane/pull/8), merged `9968999` |
 | [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446`; approved limited diagnosis-only scope, full model-authored remediation not demonstrated |
-| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | [PR #10](https://github.com/LE0ST/tasklane/pull/10) and [PR #11](https://github.com/LE0ST/tasklane/pull/11) merged; verified candidate `946b582`; platform submission and three peer reviews remain unverified |
+| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | [PR #10](https://github.com/LE0ST/tasklane/pull/10) and [PR #11](https://github.com/LE0ST/tasklane/pull/11) merged; current verified submission candidate `dd9a52696a961f58d2c5064a926b2c8082a333cf`, [CI 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699) 4/4; platform submission and three peer reviews remain unverified |
 
 See [the detailed traceability matrix](docs/evidence-traceability.md) for CI links, reviewer handoffs, and precise claims.
+
+The latest verified `main` run, [40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699), passed all four jobs for `dd9a52696a961f58d2c5064a926b2c8082a333cf` on October 26, 2026. Render was read-only verified `live` at the same SHA. This does not establish a new public health probe.
 
 ---
 
 ## Operations, Rollback & Submission
 
-Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The October 26 verification recorded Render `live` at `946b582` (deploy `dep-dbfg9o2jnfac73ens3fg`, completed at 07:45 UTC), matching [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535), 4/4 successful jobs. The public `/health` endpoint returned `{"status":"healthy"}`; see [verification recorded in Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915). This is a dated verification snapshot, not a claim that later commits are already deployed.
+Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render follows `main` and deploys after CI checks pass. On October 26, 2026, `main` at `dd9a52696a961f58d2c5064a926b2c8082a333cf` passed [CI 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699), 4/4 jobs; Astra's read-only Render check recorded the matching deploy `live` (started 08:04:19 UTC, completed 08:04:47 UTC). A public `/health` probe was not repeated for this newer SHA; the earlier probe at `946b582` is recorded in [Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915). This is the current verified candidate, not proof that the course form was submitted.
 
 **Application rollback is not database rollback.** First select a previously healthy compatible commit/deploy in the Render dashboard, check application health and compatibility with the current Alembic schema, then verify read-only database state. Never trigger `alembic downgrade` or restore production data as an automatic response to a bad app deploy. There is no independently verified backup snapshot claimed here.
 
