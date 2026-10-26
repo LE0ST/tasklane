@@ -65,30 +65,42 @@ class DiagnosticError(Exception):
         self.code = code
 
 
-def extract_alert_occurrence_id(alert: Dict[str, Any]) -> str:
-    """Extract stable occurrence identity from Grafana alert item.
+def extract_alert_occurrence_id(alert: Dict[str, Any]) -> Optional[str]:
+    """Extract validated occurrence-specific identity from Grafana alert item.
     
     Grafana alert webhooks provide:
     - fingerprint: unique hash representing the alert rule and label set.
     - startsAt: ISO timestamp when this specific firing occurrence began.
+    
+    Requirements:
+    1. For production Grafana webhooks, complete occurrence identity strictly REQUIRES
+       both non-empty `fingerprint` AND non-empty `startsAt`.
+    2. Alternatively, an explicit non-empty `occurrence_id` (used by synthetic drills
+       and tests) is accepted if distinct from the generic rule name.
+    3. NEVER fall back to `fingerprint`-only, `startsAt`-only, or `alertname`-only,
+       which repeat across sequential incidents and lead to cross-incident collisions.
     """
+    if not isinstance(alert, dict):
+        return None
+
+    labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
+
+    # Check for explicit occurrence_id tag (guarded: must not be just alertname or empty)
+    explicit_id = alert.get("occurrence_id") or labels.get("occurrence_id")
+    if explicit_id and isinstance(explicit_id, str):
+        stripped = explicit_id.strip()
+        if stripped and stripped != EXPECTED_ALERT_NAME:
+            return stripped
+
     fingerprint = str(alert.get("fingerprint") or "").strip()
     starts_at = str(alert.get("startsAt") or "").strip()
-    labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
-    alertname = str(labels.get("alertname") or EXPECTED_ALERT_NAME).strip()
 
-    # Check for explicit occurrence_id tag
-    explicit_id = alert.get("occurrence_id") or labels.get("occurrence_id")
-    if explicit_id:
-        return str(explicit_id).strip()
-
+    # Valid occurrence identity strictly requires BOTH fingerprint and startsAt
     if fingerprint and starts_at:
         return f"{fingerprint}_{starts_at}"
-    if starts_at:
-        return f"{alertname}_{starts_at}"
-    if fingerprint:
-        return f"{fingerprint}"
-    return f"{alertname}"
+
+    # Incomplete or ambiguous identity
+    return None
 
 
 # State store
@@ -303,6 +315,15 @@ class ResponderHandler(BaseHTTPRequestHandler):
         # 4. Handle resolved status
         if status == "resolved":
             with _lock:
+                # Incomplete or ambiguous occurrence identity in resolved webhook:
+                # Acknowledge as ignored without mutating current incident, repair state, or resolved_pending.
+                if not occurrence_id:
+                    return self.send_json(200, {
+                        "status": "ambiguous_resolution_ignored",
+                        "accepted": False,
+                        "detail": "Resolved notification missing occurrence identity ('fingerprint' and 'startsAt')",
+                    })
+
                 if not _current_incident:
                     return self.send_json(200, {
                         "status": "acknowledged",
@@ -311,15 +332,13 @@ class ResponderHandler(BaseHTTPRequestHandler):
 
                 current_occ_id = _current_incident.get("occurrence_id")
                 # Cross-incident guard:
-                # If both current incident and incoming resolved notification have distinct occurrence IDs,
-                # reject stale resolution without altering active incident state!
-                if current_occ_id and occurrence_id and current_occ_id != occurrence_id:
+                # If current incident and incoming resolved notification have distinct occurrence IDs,
+                # reject stale resolution without altering active incident state or revealing incident details!
+                if current_occ_id and current_occ_id != occurrence_id:
                     return self.send_json(200, {
                         "status": "stale_resolution_ignored",
                         "accepted": False,
-                        "detail": f"Stale resolution for occurrence '{occurrence_id}' ignored (active is '{current_occ_id}')",
-                        "active_incident_id": _current_incident.get("incident_id"),
-                        "active_status": _current_status,
+                        "detail": f"Stale resolution for occurrence '{occurrence_id}' ignored",
                     })
 
                 if _current_status == "repairing":
@@ -360,6 +379,13 @@ class ResponderHandler(BaseHTTPRequestHandler):
             return self.send_json(400, {
                 "error": "unsupported_alert_status",
                 "detail": f"Expected 'firing' or 'resolved', received '{status}'",
+            })
+
+        # Reject firing notifications with incomplete or missing occurrence identity
+        if not occurrence_id:
+            return self.send_json(400, {
+                "error": "missing_occurrence_identity",
+                "detail": "Firing alert requires valid occurrence identity ('fingerprint' and 'startsAt')",
             })
 
         # 6. Deduplication and concurrency guard

@@ -147,7 +147,11 @@ def test_alert_rejects_unrelated_alert():
 def test_alert_accepts_firing_and_initiates_read_only_diagnosis():
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME, "severity": "critical"}}],
+        "alerts": [{
+            "fingerprint": "fp_test_accept",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME, "severity": "critical"},
+        }],
     }
     code, data = _post_json("/alerts", firing_payload)
     assert code == 200
@@ -160,7 +164,11 @@ def test_alert_accepts_firing_and_initiates_read_only_diagnosis():
 def test_alert_deduplication():
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_dedupe",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     code1, data1 = _post_json("/alerts", firing_payload)
     assert code1 == 200
@@ -174,18 +182,26 @@ def test_alert_deduplication():
 
 
 def test_alert_handles_resolved_cleanly():
-    # 1. Fire alert
+    # 1. Fire alert with valid occurrence identity
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_clean_resolve",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     code1, data1 = _post_json("/alerts", firing_payload)
     assert code1 == 200
 
-    # 2. Resolve alert
+    # 2. Resolve alert with matching occurrence identity
     resolved_payload = {
         "status": "resolved",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_clean_resolve",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     code2, data2 = _post_json("/alerts", resolved_payload)
     assert code2 == 200
@@ -224,7 +240,11 @@ def test_authorize_repair_rejects_invalid_token():
     # Trigger firing alert first to ensure incident exists in diagnosed state
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_auth_inv",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     _, fire_data = _post_json("/alerts", firing_payload)
     incident_id = fire_data.get("incident_id")
@@ -242,7 +262,11 @@ def test_incorrect_token_does_not_consume_legitimate_token():
     set_http_repair_allowed(True)
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_auth_tok",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     _, fire_data = _post_json("/alerts", firing_payload)
     incident_id = fire_data.get("incident_id")
@@ -285,7 +309,11 @@ def test_authorize_repair_rejects_non_boolean_confirm():
     # Trigger firing alert first
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_auth_bool",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     _, fire_data = _post_json("/alerts", firing_payload)
     incident_id = fire_data.get("incident_id")
@@ -305,7 +333,11 @@ def test_authorize_repair_single_use_token_consumed():
     set_http_repair_allowed(True)
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_auth_single",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     _, fire_data = _post_json("/alerts", firing_payload)
     incident_id = fire_data.get("incident_id")
@@ -342,7 +374,11 @@ def test_malformed_alert_resets_idle_state():
     set_active_adapter(FailingAdapter())
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_fail_diag",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     code, data = _post_json("/alerts", firing_payload)
     assert code == 500
@@ -361,11 +397,19 @@ def test_incident_history_bounded(monkeypatch):
     for i in range(MAX_INCIDENT_HISTORY + 4):
         _post_json("/alerts", {
             "status": "firing",
-            "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+            "alerts": [{
+                "fingerprint": f"fp_hist_{i}",
+                "startsAt": f"2026-10-25T{i:02d}:00:00Z",
+                "labels": {"alertname": EXPECTED_ALERT_NAME},
+            }],
         })
         _post_json("/alerts", {
             "status": "resolved",
-            "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+            "alerts": [{
+                "fingerprint": f"fp_hist_{i}",
+                "startsAt": f"2026-10-25T{i:02d}:00:00Z",
+                "labels": {"alertname": EXPECTED_ALERT_NAME},
+            }],
         })
 
     code, data = _get_json("/incidents")
@@ -505,7 +549,11 @@ def test_token_write_failure_resets_idle_state_and_cleans_resources(monkeypatch)
 
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_tok_fail",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
     code, data = _post_json("/alerts", firing_payload)
     assert code == 500
@@ -568,7 +616,11 @@ def test_synthetic_exception_secret_never_appears_in_http_response(monkeypatch):
 
     firing_payload = {
         "status": "firing",
-        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        "alerts": [{
+            "fingerprint": "fp_test_secret",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
     }
 
     url = f"{BASE_URL}/alerts"
@@ -631,6 +683,471 @@ def test_synthetic_exception_secret_never_appears_in_http_response(monkeypatch):
     st_code2, st_data2 = _get_json("/status")
     assert st_code2 == 200
     assert st_data2.get("current_status") == "idle"
+
+
+# ==============================================================================
+# Occurrence Identity & Malformed Payload Boundary Tests (Fix 3)
+# ==============================================================================
+
+def test_incomplete_firing_notifications_rejected_without_state_change():
+    """Verify that firing notifications lacking valid occurrence identity (fingerprint + startsAt)
+    are deterministically rejected with HTTP 400 without mutating incident state.
+    """
+    # 1. Identity-less firing alert
+    payload_no_id = {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    }
+    code1, data1 = _post_json("/alerts", payload_no_id)
+    assert code1 == 400
+    assert data1.get("error") == "missing_occurrence_identity"
+
+    st_code1, st_data1 = _get_json("/status")
+    assert st_code1 == 200
+    assert st_data1.get("current_status") == "idle"
+    assert st_data1.get("current_incident") is None
+
+    # 2. Fingerprint-only firing alert (missing startsAt)
+    payload_fp_only = {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": "fp_only_123",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    }
+    code2, data2 = _post_json("/alerts", payload_fp_only)
+    assert code2 == 400
+    assert data2.get("error") == "missing_occurrence_identity"
+
+    st_code2, st_data2 = _get_json("/status")
+    assert st_code2 == 200
+    assert st_data2.get("current_status") == "idle"
+    assert st_data2.get("current_incident") is None
+
+    # 3. startsAt-only firing alert (missing fingerprint)
+    payload_starts_only = {
+        "status": "firing",
+        "alerts": [{
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    }
+    code3, data3 = _post_json("/alerts", payload_starts_only)
+    assert code3 == 400
+    assert data3.get("error") == "missing_occurrence_identity"
+
+    st_code3, st_data3 = _get_json("/status")
+    assert st_code3 == 200
+    assert st_data3.get("current_status") == "idle"
+    assert st_data3.get("current_incident") is None
+
+
+def test_incomplete_and_ambiguous_resolution_ignored_without_state_mutation():
+    """Verify that resolved notifications lacking valid occurrence identity are acknowledged
+    as ignored (HTTP 200 ambiguous_resolution_ignored) without mutating active incident state
+    or revealing current incident details.
+    """
+    # 1. Establish valid incident A in diagnosed state
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": "fp_active_a",
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    }
+    code_fire, data_fire = _post_json("/alerts", firing_payload)
+    assert code_fire == 200
+    inc_a_id = data_fire.get("incident_id")
+
+    # 2. Send identity-less resolved notification
+    code_no_id, data_no_id = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    })
+    assert code_no_id == 200
+    assert data_no_id.get("status") == "ambiguous_resolution_ignored"
+    assert data_no_id.get("accepted") is False
+    # Must NOT reveal active incident details
+    assert "active_incident_id" not in data_no_id
+
+    # Incident A must remain diagnosed and completely intact
+    st_code1, st_data1 = _get_json("/status")
+    assert st_code1 == 200
+    assert st_data1.get("current_status") == "diagnosed"
+    assert st_data1.get("current_incident", {}).get("incident_id") == inc_a_id
+
+    # 3. Send fingerprint-only resolved notification
+    code_fp_only, data_fp_only = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": "fp_active_a",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_fp_only == 200
+    assert data_fp_only.get("status") == "ambiguous_resolution_ignored"
+    assert data_fp_only.get("accepted") is False
+
+    st_code2, st_data2 = _get_json("/status")
+    assert st_code2 == 200
+    assert st_data2.get("current_status") == "diagnosed"
+    assert st_data2.get("current_incident", {}).get("incident_id") == inc_a_id
+
+    # 4. Send startsAt-only resolved notification
+    code_starts_only, data_starts_only = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_starts_only == 200
+    assert data_starts_only.get("status") == "ambiguous_resolution_ignored"
+    assert data_starts_only.get("accepted") is False
+
+    st_code3, st_data3 = _get_json("/status")
+    assert st_code3 == 200
+    assert st_data3.get("current_status") == "diagnosed"
+    assert st_data3.get("current_incident", {}).get("incident_id") == inc_a_id
+
+
+def test_identity_less_sequential_incidents_cannot_cross_resolve():
+    """Verify sequence: A firing -> A resolved -> B firing -> delayed A resolved.
+    Tests that neither identity-less nor fingerprint-only delayed resolutions can cross-resolve B.
+    """
+    fp_common = "fp_common_rule"
+    starts_a = "2026-10-25T10:00:00Z"
+    starts_b = "2026-10-25T11:00:00Z"
+
+    # 1. Incident A fires
+    code_a, data_a = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": fp_common,
+            "startsAt": starts_a,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_a == 200
+    inc_a_id = data_a.get("incident_id")
+
+    # 2. Incident A resolves with genuine matching identity
+    code_a_res, data_a_res = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_common,
+            "startsAt": starts_a,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_a_res == 200
+    assert data_a_res.get("status") == "resolved"
+
+    # Status must be resolved
+    st_code1, st_data1 = _get_json("/status")
+    assert st_code1 == 200
+    assert st_data1.get("current_status") == "resolved"
+
+    # 3. Incident B fires (same rule fingerprint, new startsAt)
+    code_b, data_b = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": fp_common,
+            "startsAt": starts_b,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_b == 200
+    inc_b_id = data_b.get("incident_id")
+    assert inc_b_id != inc_a_id
+
+    # 4. Delayed identity-less resolution arrives -> ignored
+    code_idless, data_idless = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    })
+    assert code_idless == 200
+    assert data_idless.get("status") == "ambiguous_resolution_ignored"
+
+    # 5. Delayed fingerprint-only resolution arrives -> ignored
+    code_fponly, data_fponly = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_common,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_fponly == 200
+    assert data_fponly.get("status") == "ambiguous_resolution_ignored"
+
+    # 6. Delayed matching resolution for incident A arrives -> stale_resolution_ignored
+    code_stale_a, data_stale_a = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_common,
+            "startsAt": starts_a,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_stale_a == 200
+    assert data_stale_a.get("status") == "stale_resolution_ignored"
+    assert data_stale_a.get("accepted") is False
+
+    # Incident B must remain completely intact and diagnosed!
+    st_code2, st_data2 = _get_json("/status")
+    assert st_code2 == 200
+    assert st_data2.get("current_status") == "diagnosed"
+    assert st_data2.get("current_incident", {}).get("incident_id") == inc_b_id
+
+    # 7. Finally, incident B resolves cleanly with matching occurrence identity
+    code_b_res, data_b_res = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_common,
+            "startsAt": starts_b,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_b_res == 200
+    assert data_b_res.get("status") == "resolved"
+
+
+def test_resolution_during_diagnosis_with_occurrence_identity(monkeypatch):
+    """Verify resolution handling while diagnosis is in flight:
+    - Stale or incomplete resolutions are ignored without altering state.
+    - Matching resolution transitions status to resolved and diagnosis completion records it cleanly.
+    """
+    import responder
+    monkeypatch.setattr(responder, "collect_incident_context", lambda *args, **kwargs: {"error_count": 1, "has_correlated_evidence": True})
+
+    slow_event = threading.Event()
+
+    class PausingAdapter(MockAgentAdapter):
+        def diagnose(self, context):
+            slow_event.wait(timeout=5.0)
+            return super().diagnose(context)
+
+    set_active_adapter(PausingAdapter())
+
+    fp = "fp_diag_occur"
+    starts = "2026-10-25T14:00:00Z"
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": fp,
+            "startsAt": starts,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    }
+
+    # Start firing in background thread
+    fire_result = {}
+    def fire_async():
+        c, d = _post_json("/alerts", firing_payload, timeout=10.0)
+        fire_result["code"] = c
+        fire_result["data"] = d
+
+    th = threading.Thread(target=fire_async)
+    th.start()
+    time.sleep(0.3)
+
+    # Server should be in diagnosing state
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "diagnosing"
+
+    # 1. Stale resolution arrives for a different occurrence -> ignored
+    stale_code, stale_data = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": "fp_different",
+            "startsAt": "2026-10-25T08:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert stale_code == 200
+    assert stale_data.get("status") == "stale_resolution_ignored"
+
+    # 2. Incomplete resolution arrives -> ignored
+    incomp_code, incomp_data = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    })
+    assert incomp_code == 200
+    assert incomp_data.get("status") == "ambiguous_resolution_ignored"
+
+    # 3. Legitimate matching resolution arrives during diagnosis -> transitions to resolved
+    match_code, match_data = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp,
+            "startsAt": starts,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert match_code == 200
+    assert match_data.get("status") == "resolved"
+
+    # Let diagnosis finish
+    slow_event.set()
+    th.join(timeout=5.0)
+
+    # Fire endpoint must have recorded resolution during diagnosis
+    assert fire_result.get("code") == 200
+    assert fire_result.get("data", {}).get("status") == "resolved"
+
+    # Status must remain resolved, NOT overwritten to diagnosed
+    st_final_code, st_final_data = _get_json("/status")
+    assert st_final_code == 200
+    assert st_final_data.get("current_status") == "resolved"
+
+
+def test_stale_or_incomplete_resolution_during_repair_does_not_set_resolved_pending():
+    """Verify that during an active repair:
+    - Incomplete or stale resolutions do NOT set resolved_pending on the incident.
+    - Matching resolution correctly queues resolution_pending.
+    """
+    set_http_repair_allowed(True)
+    import responder
+
+    fp_b = "fp_repair_test"
+    starts_b = "2026-10-25T16:00:00Z"
+
+    # 1. Fire and diagnose incident B
+    code_b, data_b = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": fp_b,
+            "startsAt": starts_b,
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_b == 200
+    inc_b_id = data_b.get("incident_id")
+
+    # Inject defect and obtain token
+    ws = get_registered_workspace(inc_b_id)
+    if ws:
+        inject_task_creation_defect(ws)
+    token = get_token_for_incident(inc_b_id)
+
+    # 2. Simulate in-flight repair by setting state to repairing
+    with responder._lock:
+        responder._current_status = "repairing"
+
+    try:
+        # (a) Send incomplete resolution
+        code_inc, data_inc = _post_json("/alerts", {
+            "status": "resolved",
+            "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        })
+        assert code_inc == 200
+        assert data_inc.get("status") == "ambiguous_resolution_ignored"
+        assert not responder._current_incident.get("resolved_pending")
+
+        # (b) Send stale resolution for prior occurrence A
+        code_stale, data_stale = _post_json("/alerts", {
+            "status": "resolved",
+            "alerts": [{
+                "fingerprint": fp_b,
+                "startsAt": "2026-10-25T05:00:00Z",
+                "labels": {"alertname": EXPECTED_ALERT_NAME},
+            }],
+        })
+        assert code_stale == 200
+        assert data_stale.get("status") == "stale_resolution_ignored"
+        assert not responder._current_incident.get("resolved_pending")
+
+        # (c) Send matching resolution for active incident B
+        code_match, data_match = _post_json("/alerts", {
+            "status": "resolved",
+            "alerts": [{
+                "fingerprint": fp_b,
+                "startsAt": starts_b,
+                "labels": {"alertname": EXPECTED_ALERT_NAME},
+            }],
+        })
+        assert code_match == 200
+        assert data_match.get("status") == "acknowledged"
+        assert responder._current_incident.get("resolved_pending") is True
+
+    finally:
+        with responder._lock:
+            responder._current_status = "diagnosed"
+
+
+def test_malformed_alerts_cannot_mutate_lifecycle_state():
+    """Verify that malformed payloads, non-objects, empty lists, or unrelated alerts
+    cannot alter active incident state or reset status.
+    """
+    # 1. Establish active incident
+    code_init, data_init = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": "fp_guard_active",
+            "startsAt": "2026-10-25T18:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_init == 200
+    active_inc_id = data_init.get("incident_id")
+
+    # (a) Malformed alert: not a JSON object
+    req1 = urllib.request.Request(
+        f"{BASE_URL}/alerts",
+        data=b"['not', 'an', 'object']",
+        headers={"Content-Type": "application/json", "Content-Length": "22"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req1)
+        pytest.fail("Expected 400")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+
+    # (b) Empty payload
+    req2 = urllib.request.Request(
+        f"{BASE_URL}/alerts",
+        data=b"",
+        headers={"Content-Type": "application/json", "Content-Length": "0"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req2)
+        pytest.fail("Expected 400")
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 400
+
+    # (c) Unrelated alert
+    code_unrel, data_unrel = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": "UnrelatedRule"}}],
+    })
+    assert code_unrel == 400
+    assert data_unrel.get("error") == "unrelated_alert"
+
+    # (d) Missing alerts list
+    code_no_list, data_no_list = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [],
+    })
+    assert code_no_list == 400
+    assert data_no_list.get("error") == "missing_alerts_list"
+
+    # (e) Firing missing occurrence identity
+    code_no_id, data_no_id = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    })
+    assert code_no_id == 400
+    assert data_no_id.get("error") == "missing_occurrence_identity"
+
+    # CRITICAL: Active incident MUST be completely unchanged!
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "diagnosed"
+    assert st_data.get("current_incident", {}).get("incident_id") == active_inc_id
 
 
 

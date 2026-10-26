@@ -83,6 +83,8 @@ def run_incident_drill() -> bool:
         "alerts": [
             {
                 "status": "firing",
+                "fingerprint": "tasklane_drill_5xx",
+                "startsAt": "2026-10-25T20:00:00Z",
                 "labels": {
                     "alertname": EXPECTED_ALERT_NAME,
                     "service": "tasklane-api",
