@@ -51,12 +51,18 @@ from sandbox import (
 
 class ProvisioningError(Exception):
     """Raised when workspace creation or authorization token generation fails."""
-    pass
+
+    def __init__(self, message: str, code: str = "provisioning_failed"):
+        super().__init__(message)
+        self.code = code
 
 
 class DiagnosticError(Exception):
     """Raised when telemetry collection or adapter diagnosis fails."""
-    pass
+
+    def __init__(self, message: str, code: str = "diagnosis_failed"):
+        super().__init__(message)
+        self.code = code
 
 
 def extract_alert_occurrence_id(alert: Dict[str, Any]) -> str:
@@ -388,19 +394,19 @@ class ResponderHandler(BaseHTTPRequestHandler):
                     repo_root = Path(__file__).resolve().parents[1]
                     workspace_path = create_disposable_workspace(repo_root, incident_id)
                 except Exception as exc:
-                    raise ProvisioningError(f"workspace_creation_failed: {exc}") from exc
+                    raise ProvisioningError(f"workspace_creation_failed: {exc}", code="workspace_creation_failed") from exc
 
                 try:
                     auth_token = generate_incident_token(incident_id)
                 except Exception as exc:
-                    raise ProvisioningError(f"token_generation_failed: {exc}") from exc
+                    raise ProvisioningError(f"token_generation_failed: {exc}", code="token_generation_failed") from exc
 
             # Read-only diagnosis execution
             try:
                 incident_context = collect_incident_context(PROMETHEUS_URL, LOKI_URL, TEMPO_URL, payload)
                 diagnosis_result = get_active_adapter().diagnose(incident_context)
             except Exception as exc:
-                raise DiagnosticError(f"diagnosis_failed: {exc}") from exc
+                raise DiagnosticError(f"diagnosis_failed: {exc}", code="diagnosis_failed") from exc
 
         except Exception as exc:
             # Cleanup ONLY resources belonging to this failing incident
@@ -424,14 +430,15 @@ class ResponderHandler(BaseHTTPRequestHandler):
                         _current_incident = None
 
             err_code = (
-                "token_generation_failed" if isinstance(exc, ProvisioningError) and "token" in str(exc)
-                else ("workspace_creation_failed" if isinstance(exc, ProvisioningError) and "workspace" in str(exc)
-                      else "diagnosis_failed")
+                getattr(exc, "code", None)
+                or ("token_generation_failed" if isinstance(exc, ProvisioningError) and "token" in str(exc)
+                    else ("workspace_creation_failed" if isinstance(exc, ProvisioningError) and "workspace" in str(exc)
+                          else "diagnosis_failed"))
             )
             return self.send_json(500, {
                 "error": err_code,
                 "incident_id": incident_id,
-                "detail": f"Provisioning or diagnosis failure: {exc}",
+                "detail": "Provisioning or diagnosis failed",
             })
 
         # 10. Update state atomically, respecting mid-diagnosis resolution

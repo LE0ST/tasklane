@@ -554,3 +554,83 @@ def test_delayed_failure_of_incident_a_does_not_clear_incident_b():
     assert st_data.get("current_incident", {}).get("incident_id") == inc_b_id
 
 
+def test_synthetic_exception_secret_never_appears_in_http_response(monkeypatch):
+    """Verify that sensitive exception text (SECRET_TEST_VALUE_123) is sanitized
+    and never leaks into the public HTTP 500 response body or headers.
+    """
+    secret_marker = "SECRET_TEST_VALUE_123"
+
+    class SecretLeakingAdapter(MockAgentAdapter):
+        def diagnose(self, incident_context: dict) -> dict:
+            raise RuntimeError(f"Database password exposed: {secret_marker}")
+
+    set_active_adapter(SecretLeakingAdapter())
+
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    }
+
+    url = f"{BASE_URL}/alerts"
+    body = json.dumps(firing_payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+        method="POST",
+    )
+
+    try:
+        urllib.request.urlopen(req, timeout=10.0)
+        pytest.fail("Expected HTTP 500 on diagnosis failure")
+    except urllib.error.HTTPError as exc:
+        raw_response = exc.read().decode("utf-8")
+        assert exc.code == 500
+        # Assert secret marker NEVER appears in raw HTTP body or headers
+        assert secret_marker not in raw_response
+        for header, val in exc.headers.items():
+            assert secret_marker not in str(header)
+            assert secret_marker not in str(val)
+
+        parsed = json.loads(raw_response)
+        assert parsed.get("error") == "diagnosis_failed"
+        assert parsed.get("detail") == "Provisioning or diagnosis failed"
+        assert secret_marker not in str(parsed)
+
+    # State must reset to idle
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "idle"
+
+    # Also test provisioning failure with the secret marker
+    import responder
+    monkeypatch.setattr(
+        responder,
+        "is_http_repair_allowed",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        responder,
+        "generate_incident_token",
+        lambda inc_id: (_ for _ in ()).throw(RuntimeError(f"Vault key exposed: {secret_marker}")),
+    )
+
+    try:
+        urllib.request.urlopen(req, timeout=10.0)
+        pytest.fail("Expected HTTP 500 on provisioning failure")
+    except urllib.error.HTTPError as exc:
+        raw_response = exc.read().decode("utf-8")
+        assert exc.code == 500
+        assert secret_marker not in raw_response
+        parsed = json.loads(raw_response)
+        assert parsed.get("error") == "token_generation_failed"
+        assert parsed.get("detail") == "Provisioning or diagnosis failed"
+        assert secret_marker not in str(parsed)
+
+    # State must reset to idle
+    st_code2, st_data2 = _get_json("/status")
+    assert st_code2 == 200
+    assert st_data2.get("current_status") == "idle"
+
+
+
