@@ -1,9 +1,20 @@
 """TaskLane Issue #4: Dedicated Local Operator CLI.
 
 Provides a secure, out-of-band operator control path for authorized remediation.
+
+CONTAINER VS HOST EXECUTION BOUNDARY:
+- When TaskLane on-call responder runs inside Docker (e.g. docker-compose.oncall.yml),
+  authorization tokens are stored strictly within the container's private filesystem
+  (/tmp/tasklane_oncall_service). Host processes cannot access container tokens.
+  Run the operator CLI inside the container via:
+    docker exec tasklane-oncall-responder python operator_cli.py authorize --incident-id <ID> --confirm
+- When running standalone on the local machine (e.g. incident drill):
+  Run directly via:
+    python incident-response/operator_cli.py authorize --incident-id <ID> --confirm
+
 Enforces:
-- Local-only execution on the host running the responder.
-- Reads single-use, cryptographically generated authorization tokens from protected local storage.
+- Local-only execution on the host/container where responder is running.
+- Reads single-use authorization tokens from protected local storage.
 - Requires explicit incident ID and boolean --confirm flag.
 - Invokes responder via authenticated POST /authorize-repair with X-Operator-Token.
 """

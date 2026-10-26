@@ -8,12 +8,17 @@ IR_DIR = Path(__file__).resolve().parents[1]
 if str(IR_DIR) not in sys.path:
     sys.path.insert(0, str(IR_DIR))
 
-from config import DISPOSABLE_SERVICE_DIR
+from config import (
+    DISPOSABLE_SERVICE_DIR,
+    DISPOSABLE_WORKSPACE_MANIFEST,
+    MAX_WORKSPACES_RETAINED,
+)
 from sandbox import (
     SecurityViolation,
     cleanup_disposable_workspace,
     create_disposable_workspace,
     get_registered_workspace,
+    prune_stale_resources,
     register_workspace,
     reset_workspace_registry,
     run_sandboxed_command,
@@ -159,3 +164,61 @@ def test_sandboxed_command_timeout():
     with pytest.raises(TimeoutError) as exc_info:
         run_sandboxed_command(cmd, cwd=ws, timeout=1, incident_id="inc-timeout")
     assert "exceeded timeout" in str(exc_info.value)
+
+
+def test_create_disposable_workspace_copies_only_positive_manifest():
+    repo_root = Path(__file__).resolve().parents[2]
+    ws = create_disposable_workspace(repo_root, incident_id="manifest-test-inc")
+    try:
+        # Verify explicitly included files exist
+        assert (ws / "backend" / "main.py").exists()
+        assert (ws / "backend" / "tests" / "test_api.py").exists()
+
+        # Verify excluded items are STRICTLY ABSENT
+        assert not (ws / "backend" / "tests" / "conftest.py").exists()
+        assert not (ws / "backend" / ".env").exists()
+        assert not (ws / "backend" / ".venv").exists()
+        assert not (ws / "backend" / "tests" / "test_postgres_integration.py").exists()
+        assert not (ws / "backend" / "tests" / "test_telemetry.py").exists()
+
+        # Count total copied files in workspace - must match DISPOSABLE_WORKSPACE_MANIFEST exactly
+        copied_files = [p for p in ws.rglob("*") if p.is_file() and not p.name.startswith("workspace_")]
+        assert len(copied_files) <= len(DISPOSABLE_WORKSPACE_MANIFEST)
+    finally:
+        cleanup_disposable_workspace(ws, incident_id="manifest-test-inc")
+
+
+def test_sanitize_process_environment_rejects_unsafe_overrides():
+    unsafe_keys = [
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "PYTEST_ADDOPTS",
+        "PYTHONSTARTUP",
+        "PYTHONPATH",
+        "HTTP_PROXY",
+    ]
+    for key in unsafe_keys:
+        with pytest.raises(SecurityViolation) as exc_info:
+            sanitize_process_environment(extra_env={key: "malicious_injection"})
+        assert "Unsafe environment override rejected" in str(exc_info.value)
+
+
+def test_prune_stale_resources(tmp_path):
+    # Create several fake workspaces
+    created = []
+    for i in range(MAX_WORKSPACES_RETAINED + 3):
+        fake_ws = DISPOSABLE_SERVICE_DIR / f"workspace_prune_test_{i}"
+        fake_ws.mkdir(parents=True, exist_ok=True)
+        register_workspace(f"prune-inc-{i}", fake_ws)
+        created.append(fake_ws)
+
+    try:
+        prune_stale_resources(max_keep=MAX_WORKSPACES_RETAINED)
+        remaining = list(DISPOSABLE_SERVICE_DIR.glob("workspace_prune_test_*"))
+        assert len(remaining) <= MAX_WORKSPACES_RETAINED
+    finally:
+        for ws in created:
+            if ws.exists():
+                import shutil
+                shutil.rmtree(ws, ignore_errors=True)
+

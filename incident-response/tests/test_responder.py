@@ -24,10 +24,16 @@ if str(IR_DIR) not in sys.path:
     sys.path.insert(0, str(IR_DIR))
 
 from agent_adapter import MockAgentAdapter
-from config import EXPECTED_ALERT_NAME, MAX_PAYLOAD_BYTES
+from config import EXPECTED_ALERT_NAME, MAX_INCIDENT_HISTORY, MAX_PAYLOAD_BYTES
 from fixtures import inject_task_creation_defect
 from operator_cli import get_token_for_incident
-from responder import reset_state, run_server, set_active_adapter
+from responder import (
+    _get_token_path,
+    reset_state,
+    run_server,
+    set_active_adapter,
+    set_http_repair_allowed,
+)
 from sandbox import get_registered_workspace, reset_workspace_registry
 
 TEST_PORT = 18001
@@ -195,23 +201,87 @@ def test_alert_handles_resolved_cleanly():
 # Repair Authorization Security Tests
 # ==============================================================================
 
+def test_authorize_repair_disabled_by_default():
+    set_http_repair_allowed(False)
+    code, data = _post_json(
+        "/authorize-repair",
+        {"incident_id": "test_any", "confirm": True},
+        headers={"X-Operator-Token": "test_token"},
+    )
+    assert code == 403
+    assert data.get("error") == "repair_disabled"
+
+
 def test_authorize_repair_rejects_without_token():
+    set_http_repair_allowed(True)
     code, data = _post_json("/authorize-repair", {"incident_id": "test", "confirm": True})
     assert code == 401
     assert data.get("error") == "authentication_required"
 
 
 def test_authorize_repair_rejects_invalid_token():
+    set_http_repair_allowed(True)
+    # Trigger firing alert first to ensure incident exists in diagnosed state
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    }
+    _, fire_data = _post_json("/alerts", firing_payload)
+    incident_id = fire_data.get("incident_id")
+
     code, data = _post_json(
         "/authorize-repair",
-        {"incident_id": "test", "confirm": True},
+        {"incident_id": incident_id, "confirm": True},
         headers={"X-Operator-Token": "invalid_fake_token"},
     )
     assert code == 403
     assert data.get("error") == "authorization_denied"
 
 
+def test_incorrect_token_does_not_consume_legitimate_token():
+    set_http_repair_allowed(True)
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    }
+    _, fire_data = _post_json("/alerts", firing_payload)
+    incident_id = fire_data.get("incident_id")
+    ws = get_registered_workspace(incident_id)
+    if ws:
+        inject_task_creation_defect(ws)
+    legit_token = get_token_for_incident(incident_id)
+    assert legit_token is not None
+
+    token_file = _get_token_path(incident_id)
+    assert token_file.exists(), "Legitimate token file must exist"
+
+    # Attempt repair with invalid token
+    code_bad, data_bad = _post_json(
+        "/authorize-repair",
+        {"incident_id": incident_id, "confirm": True},
+        headers={"X-Operator-Token": "completely_wrong_candidate_token"},
+    )
+    assert code_bad == 403
+    assert data_bad.get("error") == "authorization_denied"
+
+    # CRITICAL: Token file MUST still exist!
+    assert token_file.exists(), "Legitimate token was improperly deleted on incorrect attempt"
+
+    # Now attempt repair with legitimate token - must succeed!
+    code_good, data_good = _post_json(
+        "/authorize-repair",
+        {"incident_id": incident_id, "confirm": True},
+        headers={"X-Operator-Token": legit_token},
+    )
+    assert code_good == 200
+    assert data_good.get("status") == "repaired"
+
+    # After successful repair, token file MUST be deleted (single-use)
+    assert not token_file.exists(), "Token was not consumed upon successful repair"
+
+
 def test_authorize_repair_rejects_non_boolean_confirm():
+    set_http_repair_allowed(True)
     # Trigger firing alert first
     firing_payload = {
         "status": "firing",
@@ -232,6 +302,7 @@ def test_authorize_repair_rejects_non_boolean_confirm():
 
 
 def test_authorize_repair_single_use_token_consumed():
+    set_http_repair_allowed(True)
     firing_payload = {
         "status": "firing",
         "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
@@ -261,3 +332,44 @@ def test_authorize_repair_single_use_token_consumed():
     )
     assert code2 == 403
     assert data2.get("error") == "authorization_denied"
+
+
+def test_malformed_alert_resets_idle_state():
+    class FailingAdapter(MockAgentAdapter):
+        def diagnose(self, context):
+            raise RuntimeError("Synthetic diagnosis failure")
+
+    set_active_adapter(FailingAdapter())
+    firing_payload = {
+        "status": "firing",
+        "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+    }
+    code, data = _post_json("/alerts", firing_payload)
+    assert code == 500
+    assert data.get("error") == "diagnosis_failed"
+
+    # Server status must cleanly recover to idle
+    st_code, st_data = _get_json("/status")
+    assert st_code == 200
+    assert st_data.get("current_status") == "idle"
+
+
+def test_incident_history_bounded(monkeypatch):
+    import responder
+    monkeypatch.setattr(responder, "collect_incident_context", lambda *args, **kwargs: {"error_count": 1, "has_correlated_evidence": True})
+    # Fire and resolve multiple alerts
+    for i in range(MAX_INCIDENT_HISTORY + 4):
+        _post_json("/alerts", {
+            "status": "firing",
+            "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        })
+        _post_json("/alerts", {
+            "status": "resolved",
+            "alerts": [{"labels": {"alertname": EXPECTED_ALERT_NAME}}],
+        })
+
+    code, data = _get_json("/incidents")
+    assert code == 200
+    incidents = data.get("incidents", [])
+    assert len(incidents) <= MAX_INCIDENT_HISTORY
+

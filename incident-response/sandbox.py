@@ -1,28 +1,39 @@
-"""Sandbox containment and process isolation for disposable workspaces.
+"""Process isolation and workspace containment for disposable incident response environments.
+
+SECURITY DISCLAIMER:
+The containment mechanisms in this module (directory boundary checks, environment allowlisting,
+process timeouts, and unprivileged user execution) provide defense-in-depth policy constraints.
+They DO NOT constitute an OS-level kernel security sandbox. Untrusted code must never be executed
+without an independently isolated worker (e.g. gVisor, Firecracker, or isolated container runtime).
 
 Enforces:
-- Service-owned directory and strict workspace registry.
-- Rejection of root, unregistered, traversal, and symlink escape paths.
-- Allowlisted source copying (excludes .env, credentials, venvs, test hooks).
-- Minimal environment variable allowlist (purges AWS, database URLs, HOME, PYTHONPATH).
-- Offline test execution with proxy restrictions.
-- Strict process execution timeouts with output bounding.
+- Service-owned directory and incident-bound workspace registry.
+- Explicit positive file manifest copying (strictly excludes conftest.py, .env, credentials, test hooks).
+- Bounded workspace and token retention (prunes stale directories).
+- Minimal environment allowlist (purges AWS, database URLs, HOME, PYTHONPATH).
+- Rejection of unsafe overrides (LD_PRELOAD, PYTEST_ADDOPTS, proxy settings, credentials).
+- Process execution timeouts and output buffer bounding (64 KB).
 - Forbidden flags guard (blocks --dangerously-bypass-approvals-and-sandbox).
 """
 import os
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from config import (
     DISPOSABLE_SERVICE_DIR,
+    DISPOSABLE_WORKSPACE_MANIFEST,
     FORBIDDEN_ENV_PATTERNS,
     MAX_OUTPUT_BYTES,
+    MAX_WORKSPACES_RETAINED,
     REPAIR_TIMEOUT_SECONDS,
     SAFE_ENV_ALLOWLIST,
+    TOKEN_EXPIRATION_SECONDS,
+    UNSAFE_ENV_OVERRIDE_KEYS,
 )
 
 
@@ -89,6 +100,51 @@ def reset_workspace_registry() -> None:
     _workspace_registry.clear()
 
 
+def prune_stale_resources(max_keep: int = MAX_WORKSPACES_RETAINED) -> None:
+    """Clean up old disposable workspaces and expired tokens to bound resource accumulation."""
+    if not DISPOSABLE_SERVICE_DIR.exists():
+        return
+
+    now = time.time()
+
+    # 1. Prune expired auth tokens
+    try:
+        for token_file in DISPOSABLE_SERVICE_DIR.glob("auth_*.token"):
+            try:
+                mtime = token_file.stat().st_mtime
+                if now - mtime > TOKEN_EXPIRATION_SECONDS:
+                    token_file.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+    # 2. Prune old workspaces exceeding max_keep
+    try:
+        workspaces = [
+            p for p in DISPOSABLE_SERVICE_DIR.glob("workspace_*")
+            if p.is_dir()
+        ]
+        if len(workspaces) > max_keep:
+            # Sort by modification time, oldest first
+            workspaces.sort(key=lambda p: p.stat().st_mtime)
+            to_remove = workspaces[: len(workspaces) - max_keep]
+            for ws in to_remove:
+                try:
+                    shutil.rmtree(ws, ignore_errors=True)
+                    # Also remove corresponding path link if exists
+                    parts = ws.name.split("_")
+                    if len(parts) >= 2:
+                        inc_id = parts[1]
+                        ws_path_link = DISPOSABLE_SERVICE_DIR / f"workspace_{inc_id}.path"
+                        if ws_path_link.exists():
+                            ws_path_link.unlink()
+                except OSError:
+                    pass
+    except Exception:
+        pass
+
+
 def validate_safe_workspace_path(
     target_path: Path,
     required_incident_id: Optional[str] = None,
@@ -139,13 +195,20 @@ def validate_safe_workspace_path(
     # Enforce registration binding
     if enforce_registry:
         if required_incident_id is not None:
-            expected = _workspace_registry.get(required_incident_id)
+            expected = get_registered_workspace(required_incident_id)
             if expected is None or resolved_target != expected:
                 raise SecurityViolation(
                     f"Workspace '{resolved_target}' is not registered for incident '{required_incident_id}'"
                 )
         else:
-            if resolved_target not in _workspace_registry.values():
+            registered_targets = list(_workspace_registry.values())
+            # Also check disk-registered workspaces
+            for link in DISPOSABLE_SERVICE_DIR.glob("workspace_*.path"):
+                try:
+                    registered_targets.append(Path(link.read_text(encoding="utf-8").strip()).resolve())
+                except OSError:
+                    pass
+            if resolved_target not in registered_targets:
                 raise SecurityViolation(
                     f"Workspace '{resolved_target}' is not in the active registered workspace registry"
                 )
@@ -160,8 +223,9 @@ def create_disposable_workspace(
 ) -> Path:
     """Provision a fresh, disposable workspace isolated from the main repository checkout.
     
-    Allowlists copied source files: copies only backend python code and minimal configs.
-    Strictly excludes .env, credentials, virtual environments, sqlite dbs, and test hooks.
+    Uses an explicit POSITIVE file manifest (DISPOSABLE_WORKSPACE_MANIFEST).
+    STRICTLY EXCLUDES conftest.py, .env, credentials, unrelated tests, and virtual environments.
+    Prunes stale workspaces to enforce bounded resource retention.
     """
     if base_dir is None:
         base_dir = DISPOSABLE_SERVICE_DIR
@@ -173,38 +237,20 @@ def create_disposable_workspace(
         except OSError:
             pass
 
+    # Prune stale workspaces before creating a new one
+    prune_stale_resources(max_keep=MAX_WORKSPACES_RETAINED)
+
     workspace_id = f"workspace_{incident_id}_{uuid.uuid4().hex[:8]}"
     workspace_path = base_dir / workspace_id
     workspace_path.mkdir(parents=True, exist_ok=False)
 
-    # Allowlisted copy of backend directory
-    src_backend = source_repo_root / "backend"
-    dst_backend = workspace_path / "backend"
-    if src_backend.exists():
-        # Copy backend directory ignoring credentials, databases, venvs, cache
-        shutil.copytree(
-            src_backend,
-            dst_backend,
-            ignore=shutil.ignore_patterns(
-                ".env*",
-                "*.env",
-                "*.db*",
-                "*.sqlite*",
-                ".venv*",
-                "venv*",
-                "__pycache__",
-                ".pytest_cache",
-                "*.pyc",
-                ".git*",
-                "secrets*",
-            ),
-        )
-
-    # Copy root configuration files if present (no credentials)
-    for fname in ["pyproject.toml", "openapi.yaml"]:
-        src_file = source_repo_root / fname
-        if src_file.exists():
-            shutil.copy2(src_file, workspace_path / fname)
+    # Copy ONLY files explicitly listed in DISPOSABLE_WORKSPACE_MANIFEST
+    for rel_path in DISPOSABLE_WORKSPACE_MANIFEST:
+        src_file = source_repo_root / rel_path
+        if src_file.exists() and src_file.is_file():
+            dst_file = workspace_path / rel_path
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
 
     # Register the workspace for this incident
     register_workspace(incident_id, workspace_path)
@@ -232,7 +278,8 @@ def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> 
     """Build a strictly minimal sanitized environment dictionary using SAFE_ENV_ALLOWLIST.
     
     Purges credential-bearing variables including AWS_ACCESS_KEY_ID, DATABASE_URL,
-    TEST_DATABASE_URL, HOME, and PYTHONPATH. Rejects credential-bearing extra_env.
+    TEST_DATABASE_URL, HOME, and PYTHONPATH. Rejects unsafe overrides (LD_PRELOAD,
+    PYTEST_ADDOPTS, proxy settings, credentials).
     """
     clean_env: Dict[str, str] = {}
 
@@ -240,7 +287,6 @@ def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> 
     for key in SAFE_ENV_ALLOWLIST:
         val = os.environ.get(key)
         if val is not None:
-            # Check value does not look like a credential
             clean_env[key] = val
 
     # 2. Strict isolated test settings
@@ -249,7 +295,7 @@ def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> 
     clean_env["PYTHONDONTWRITEBYTECODE"] = "1"
     clean_env["PYTHONUNBUFFERED"] = "1"
 
-    # Enforce offline test execution (restrict network escape from repaired code)
+    # Block outbound network from child process
     clean_env["HTTP_PROXY"] = "http://127.0.0.1:0"
     clean_env["HTTPS_PROXY"] = "http://127.0.0.1:0"
     clean_env["NO_PROXY"] = "localhost,127.0.0.1"
@@ -274,6 +320,10 @@ def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> 
     if extra_env:
         for k, v in extra_env.items():
             k_upper = k.upper()
+            # Reject unsafe environment overrides
+            if k_upper in UNSAFE_ENV_OVERRIDE_KEYS:
+                raise SecurityViolation(f"Unsafe environment override rejected: '{k}'")
+            # Reject credential patterns
             if any(pattern in k_upper for pattern in FORBIDDEN_ENV_PATTERNS):
                 raise SecurityViolation(f"Dangerous environment override rejected: '{k}'")
             clean_env[k] = str(v)

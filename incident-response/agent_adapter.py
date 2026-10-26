@@ -25,6 +25,7 @@ from sandbox import (
     find_test_python,
     run_disposable_tests,
     run_sandboxed_command,
+    sanitize_process_environment,
     validate_safe_workspace_path,
 )
 
@@ -197,6 +198,7 @@ class CodexAgentAdapter(BaseAgentAdapter):
 
         try:
             repo_root = Path(__file__).resolve().parents[1]
+            safe_env = sanitize_process_environment()
             proc = subprocess.run(
                 cmd,
                 cwd=str(repo_root),
@@ -205,12 +207,19 @@ class CodexAgentAdapter(BaseAgentAdapter):
                 text=True,
                 timeout=DIAGNOSIS_TIMEOUT_SECONDS,
                 check=False,
+                env=safe_env,
             )
+            # Never expose raw process errors or unchecked stderr dumps
+            if proc.returncode == 0 and proc.stdout:
+                analysis = proc.stdout[:2048].strip()
+            else:
+                analysis = "Diagnostic execution completed without actionable output"
+
             return {
                 "adapter": self.adapter_name,
                 "model_executed": (proc.returncode == 0),
                 "status": "diagnosed" if proc.returncode == 0 else "diagnostic_failed",
-                "analysis": proc.stdout[:2048] if proc.stdout else "No output",
+                "analysis": analysis,
             }
         except subprocess.TimeoutExpired:
             return {
