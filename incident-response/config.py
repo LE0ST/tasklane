@@ -21,6 +21,11 @@ LOKI_SERVICE_NAME = os.environ.get("LOKI_SERVICE_NAME", "tasklane-api")
 EXPECTED_ALERT_NAME = "TaskLane5xxRate"
 MAX_PAYLOAD_BYTES = 65536   # 64 KB max alert webhook payload
 MAX_OUTPUT_BYTES = 65536    # 64 KB max subprocess capture buffer
+MAX_DIFF_BYTES = int(os.environ.get("MAX_DIFF_BYTES", "16384"))  # 16 KB max model diff
+
+# Model settings
+DEEPSEEK_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
 # Timeouts and limits
 DIAGNOSIS_TIMEOUT_SECONDS = int(os.environ.get("DIAGNOSIS_TIMEOUT_SECONDS", "30"))
@@ -70,6 +75,7 @@ FORBIDDEN_ENV_PATTERNS = {
     "NEON",
     "GITHUB",
     "GH",
+    "DEEPSEEK",
 }
 
 # Unsafe environment override keys that must be rejected if supplied in extra_env

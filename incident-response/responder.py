@@ -24,7 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent_adapter import BaseAgentAdapter, CodexAgentAdapter, MockAgentAdapter
+from agent_adapter import (
+    BaseAgentAdapter,
+    CodexAgentAdapter,
+    DeepSeekAgentAdapter,
+    MockAgentAdapter,
+)
 from collector import collect_incident_context
 from config import (
     ALLOW_HTTP_REPAIR,
@@ -98,8 +103,16 @@ _current_incident: Optional[Dict[str, Any]] = None
 _incident_history: List[Dict[str, Any]] = []
 _http_repair_allowed: bool = ALLOW_HTTP_REPAIR
 
+def create_configured_adapter() -> BaseAgentAdapter:
+    adapter_name = os.environ.get("TASKLANE_AGENT_ADAPTER", "mock").lower()
+    if adapter_name == "deepseek":
+        return DeepSeekAgentAdapter()
+    if adapter_name == "codex":
+        return CodexAgentAdapter()
+    return MockAgentAdapter()
+
 # Active adapter (default to MockAgentAdapter for deterministic CI safety)
-_active_adapter: BaseAgentAdapter = MockAgentAdapter()
+_active_adapter: BaseAgentAdapter = create_configured_adapter()
 
 
 def is_http_repair_allowed() -> bool:

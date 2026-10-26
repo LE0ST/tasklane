@@ -434,6 +434,7 @@ def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> 
         "RENDER_API_KEY",
         "NEON_API_KEY",
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
     ]:
         clean_env.pop(sensitive, None)
 
