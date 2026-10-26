@@ -10,35 +10,20 @@ TaskLane is an AI-assisted full-stack Kanban workflow application deployed in a 
 
 ```mermaid
 graph TD
-    subgraph Client Layer
-        Browser["User / Evaluator Browser"]
+    subgraph Client["Client"]
+        Browser["Web browser"]
     end
-
-    subgraph Render Cloud Platform
-        subgraph Web Service: tasklane-app (Docker Multi-Stage)
-            FastAPI["FastAPI Backend (:8000 / Dynamic :10000)"]
-            Static["Mounted React 19 Static SPA (/dist)"]
-            FastAPI --- Static
-        end
+    subgraph Render["Render web service"]
+        FastAPI["FastAPI API and migrations"]
+        Static["React 19 static assets"]
+        FastAPI --- Static
     end
-
-    subgraph Serverless Cloud Database: Neon
-        NeonPG[("Neon PostgreSQL 16<br/>Project: tasklane<br/>Branch: import (Active)<br/>DB: neondb")]
-    end
-
-    subgraph Former Temporary Database: Render
-        RenderPG[("Render PostgreSQL 16<br/>tasklane-db (Former Source)<br/>Status: Temporary Reference / Expiring Oct 24, 2026")]
-    end
-
-    subgraph Local Development Stack (Docker Compose)
-        LocalApp["tasklane:hw3 (FastAPI + React)"]
-        LocalPG[("postgres:16-alpine (Local :5432)")]
-        LocalApp -->|DATABASE_URL| LocalPG
-    end
-
-    Browser -->|HTTPS :443| FastAPI
-    FastAPI -->|Protected DATABASE_URL (SSL)<br/>Alembic Migrations on Lifespan| NeonPG
+    NeonPG[("Neon PostgreSQL 16")]
+    Browser -->|"HTTPS"| FastAPI
+    FastAPI -->|"DATABASE_URL (SSL)"| NeonPG
 ```
+
+Neon project `tasklane`, branch `import`, database `neondb` is the active production database. The former Render database is a historical migration source and is not part of the active request path.
 
 ---
 
@@ -69,7 +54,7 @@ graph TD
 - **Service Name:** `tasklane-db`
 - **Role:** Former initial database source from Homework 3.
 - **Status:** Served as a temporary reference source during the migration to verify that new tasks are stored in Neon `neondb` and absent from the old database.
-- **Expiration:** As a Render Free database instance, it is scheduled to expire on October 24, 2026. It is NOT a permanent backup. Neon PostgreSQL 16 (`import` branch, `neondb`) is the sole verified production database.
+- **Expiration:** Its scheduled expiration date was October 24, 2026; current availability has not been reverified. It is NOT a permanent backup. Neon PostgreSQL 16 (`import` branch, `neondb`) is the sole verified production database.
 
 ---
 
@@ -131,18 +116,18 @@ Issue #2 adds an **opt-in, local-only** OpenTelemetry instrumentation pipeline. 
 
 ```mermaid
 graph LR
-    subgraph Application Container
+    subgraph AppContainer["Application container"]
         FastAPIApp["FastAPI Service (:8000)"]
-        OTelSDK["OpenTelemetry Python SDK<br/>(Tracer, Meter, Logger)"]
+        OTelSDK["OpenTelemetry Python SDK; (Tracer, Meter, Logger)"]
         FastAPIApp --> OTelSDK
     end
 
-    subgraph Observability Services (Docker Compose)
+    subgraph LocalObservability["Observability services (Docker Compose)"]
         OTelCollector["OpenTelemetry Collector (:4317/:4318)"]
-        Prometheus["Prometheus (:9090)<br/>Metrics Storage"]
-        Loki["Grafana Loki (:3100)<br/>Log Aggregation"]
-        Tempo["Grafana Tempo (:3200)<br/>Trace Storage"]
-        Grafana["Grafana UI (:3000)<br/>Dashboards & Alerts"]
+        Prometheus["Prometheus (:9090); Metrics Storage"]
+        Loki["Grafana Loki (:3100); Log Aggregation"]
+        Tempo["Grafana Tempo (:3200); Trace Storage"]
+        Grafana["Grafana UI (:3000); Dashboards & Alerts"]
 
         OTelSDK -->|OTLP gRPC/HTTP| OTelCollector
         OTelCollector -->|Export Metrics| Prometheus
@@ -153,7 +138,7 @@ graph LR
         Tempo --> Grafana
     end
 
-    subgraph Incident Response (Issue #4)
+    subgraph IncidentResponse["Incident response (Issue #4)"]
         Responder["Incident Responder (:8001)"]
         Grafana -->|Webhook POST /alerts| Responder
     end
