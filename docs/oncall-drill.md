@@ -1,6 +1,6 @@
-# Issue #4 — Autonomous On-Call Incident Responder & Bounded Remediation
+# Issue #4 — Local On-Call Diagnostic Responder and Mock Recovery
 
-**Status:** Security-hardened architecture, authenticated local operator CLI, private service-owned workspace containment, structured telemetry correlation, and reproducible incident drill implemented and verified in branch `project1/oncall-responder`. Draft PR [#9](https://github.com/LE0ST/tasklane/pull/9) targets `main` referencing Issue #4.
+**Status (October 26, 2026):** [PR #9](https://github.com/LE0ST/tasklane/pull/9) was human-authorized and squash-merged to `main` as [`7c73446`](https://github.com/LE0ST/tasklane/commit/7c7344690bf3260297301a14f434d00cb6eb123a). [Merged-main GitHub Actions 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed all four jobs. The local Grafana alert-driven **read-only diagnosis** is implemented; deterministic mock fixture repair was separately tested. **No live LLM-authored fix or independently isolated write-capable agent repair has been demonstrated.**
 
 ---
 
@@ -139,7 +139,7 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
 - **Mock Adapter Disclosure:** `MockAgentAdapter` is explicitly documented as a deterministic test fixture adapter that performs marker rollback for containment verification. It is **NOT** represented as an autonomous AI or LLM repair.
 - **Codex Agent Adapter:** `CodexAgentAdapter` is implemented with `--sandbox read-only` diagnosis and `--sandbox workspace-write` repair execution. Subprocess environment is strictly sanitized via `sanitize_process_environment()`.
 - **Write-Capable Codex Execution Disabled:** In accordance with repository safety policies, write-capable Codex execution is **DISABLED** pending explicit maintainer authorization and verification of an independently isolated worker. No live write-capable model execution was performed.
-- **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation is intentionally disabled. This PR stops at **READY FOR TARGETED REVIEW**.
+- **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation is intentionally disabled. The limited diagnosis-only PR was approved and merged; full autonomous AI code remediation is still unproven.
 
 ---
 

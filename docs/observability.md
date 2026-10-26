@@ -1,6 +1,6 @@
 # TaskLane — Optional Local OpenTelemetry Observability Stack (Issue #2)
 
-**Status:** Updated to resolve Consolidated QA/SRE Audit findings from **GPT-6 Astra Medium** and **GPT-6.1 Sol Medium**. The local OpenTelemetry stack provides fail-open request telemetry, sensitive exception redaction, local-only database isolation, fixed exec-form healthchecks, localhost port bindings, and Grafana log-to-trace navigation. This stack is **local-only**, strictly disabled on Render production, and requires human maintainer authorization before merging.
+**Status (October 25, 2026):** The opt-in, local-only observability stack was merged through [PR #7](https://github.com/LE0ST/tasklane/pull/7) as [`cc9cce7`](https://github.com/LE0ST/tasklane/commit/cc9cce7fb27ad3b769e8d4fcf3164f597d4a7fb8). Security/SRE review findings were addressed before the human-authorized merge. This module remains disabled by default on production Render, while the additional user-impact alert was subsequently merged in PR #8. For latest passing combined evidence see [CI 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032).
 
 ---
 
@@ -166,12 +166,11 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ## 4. Automated Test Coverage & Verification Evidence
 
 ### 4.1 Test Counts
-- **33 Non-Integration Backend Tests** (14 API/CRUD tests + 19 Telemetry & Isolation tests).
-- **5 PostgreSQL Integration Tests** (`test_postgres_integration.py`).
-- **38 Total Backend Tests**.
+- **76 backend tests** passed at the merged-main baseline `9968999` in [GitHub Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032). This current total combines API, incident-alert validation, telemetry, and PostgreSQL integration tests; it supersedes the historical 38-test count from the initial Issue #2 implementation.
+- **54 additional on-call responder tests** passed in [merged PR #9](https://github.com/LE0ST/tasklane/pull/9), [PR CI 40272231320](https://github.com/LE0ST/tasklane/actions/runs/40272231320), and its [merged-main CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271). They verify the local-only diagnostic responder, not live AI-authored repair.
 
 ### 4.2 Telemetry Test Breakdown (`backend/tests/test_telemetry.py`)
-19 automated tests verify:
+The telemetry and isolation tests verify:
 - **Default Disabled State:** `enable_telemetry` returns `False` when flag is omitted; HTTP requests execute normally with zero telemetry logging.
 - **Fail-Open Behavior:** Missing SDK packages (`ImportError`) and unreachable OTLP endpoints fail open without crashing or blocking HTTP traffic.
 - **Incompatible Configuration Fail-Open:** Tests incompatible batch processor settings (`OTEL_BSP_MAX_QUEUE_SIZE=1`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE=2`), asserting that `enable_telemetry` returns `False`, no middleware is installed, a sanitized warning is logged without leaking raw exception details or configuration values, and `/health` serves traffic normally.
@@ -193,6 +192,6 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ### 4.3 CI Pipeline Integration
 - Run in GitHub Actions with 4 parallel/sequential verification jobs:
   1. `Frontend Build & Asset Verification`
-  2. `Backend Tests & PostgreSQL Integration` (38 tests)
+  2. `Backend Tests & PostgreSQL Integration` (76 tests at baseline `9968999`)
   3. `Docker Build, Smoke Tests & Playwright E2E`
   4. `OpenTelemetry Local Stack & Correlation` (`observability-smoke`)

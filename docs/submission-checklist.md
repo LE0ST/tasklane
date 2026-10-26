@@ -1,0 +1,63 @@
+# TaskLane — Final Submission and Peer-Review Checklist
+
+**As-of:** October 26, 2026. **Purpose:** prevent inflated claims, stale SHAs, broken instructions and missing course peer reviews. The authoritative deadline and submission workflow live on the [DataTalksClub course platform](https://courses.datatalks.club/ai-dev-tools-2026/); do not assume a platform deadline time zone.
+
+## Public submission metadata
+
+- Repository: [https://github.com/LE0ST/tasklane](https://github.com/LE0ST/tasklane)
+- Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
+- API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
+- **Merged `main` HEAD verified:** `7c7344690bf3260297301a14f434d00cb6eb123a` (squash PR #9). Postmerge CI and Render deploy are checked separately.
+- **Final submission commit SHA: PENDING.** Record the exact final `main` commit SHA only after all authorized PR merges and final CI/deploy checks.
+- Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; **no real AI-generated repair**.
+- Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
+
+## Final gate checklist — update only when evidence exists
+
+- [x] English problem description, app behavior, spec and OpenAPI documented.
+- [x] Public Issues #1–#5 have acceptance criteria, and merged Issue #1–#3 history is linked.
+- [x] Agent team, role boundaries, and modular AGENTS.md guidance documented.
+- [x] One-command Docker Compose stack with local PostgreSQL is implemented and tested in CI.
+- [x] Backend, PostgreSQL, Alembic, Playwright, and local telemetry/on-call CI passed at merged `main` SHA `7c73446` ([run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271), 4/4 jobs; 76 backend + 54 responder tests).
+- [x] Local Grafana user-impact task 503 firing and resolved notifications demonstrated; no production fault injection.
+- [x] Render service/deploy status and Neon existing row count verified read-only through October 26.
+- [x] Production-safe app rollback and database recovery **procedures** documented; no actual production rollback or backup restore is claimed.
+- [x] Receive external independent security and SRE approval for PR #9's limited diagnosis-only scope (Sol reviewed earlier security HEAD; Astra approved final identity-only HEAD).
+- [x] Obtain explicit maintainer approval and squash-merge PR #9 as `7c73446`.
+- [x] Verify merged-main [CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed 4/4 and Render deploy `dep-dbfe8kuk1f9s7386g05g` is `live` at `7c73446`; Neon read-only totals unchanged (2 tasks, 1 migration check; Alembic `1ea1353bfe87`).
+- [ ] Merge Issue #5 documentation PR only after review and explicit maintainer approval; capture its final merged SHA and passing CI.
+- [ ] Verify public demo and application behavior without adding or changing production tasks.
+- [ ] Record final `main` commit SHA and linked Actions deployment evidence in submission.
+- [x] Verify published Project 1 deadline: **October 26, 2026 at 23:00**, displayed in the viewer's timezone on the [course project page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
+- [ ] Complete course-platform submission while logged in, and save proof of submission.
+- [ ] **Complete three required peer reviews** of other participants on the course platform and retain evidence of each. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit.
+
+## Actual Project 1 submission form (confirmed October 26, 2026)
+
+Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools-2026/project/project1), log in, and submit **before October 26, 2026 at 23:00 as displayed in your timezone**. The publicly visible form asks for:
+
+| Form field | What to enter |
+|---|---|
+| GitHub link to the project | `https://github.com/LE0ST/tasklane` |
+| Commit ID | **Exact final merged `main` SHA** after PR #10 review, merge, and final verification; NOT its premerge feature-branch HEAD |
+| Learning in public links (optional) | Up to 14 relevant public progress posts; only if already published |
+| Time spent on project (hours) | The maintainer's actual hours; **do not invent** a number |
+| FAQ contribution PR or issue URL (optional) | Only an actual qualifying contribution |
+| Certificate name | The name the maintainer wants printed on the certificate |
+
+**Submission and peer review are separate obligations.** Saving a project does not satisfy the requirement to review three other participants' projects. After submitting, use the platform's review assignments/instructions, score **three** projects using the [official rubric](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md), and retain completion evidence. The public unauthenticated page does not expose the participant-specific review workflow.
+
+## Do not overstate
+
+- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. No live coding model generated the tested repair. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
+- **CI/CD:** CI covers four jobs and Render auto-deploys on passing checks. No staging-to-manual-production pipeline is claimed.
+- **Production database:** Current Neon SELECT evidence is read-only; historical Render DB condition was not reverified. No fresh production data mutation or independently verified backup is claimed.
+- **Security audit:** Astra and Sol provide external read-only reports/PR comments. Do not misrepresent their analyses as native GitHub reviews or approval to merge.
+- **Score:** 24 possible rubric points; peers award actual grades. This checklist makes no score prediction or guarantee.
+
+## Linked resources
+
+- [Evidence and rubric traceability](evidence-traceability.md)
+- [Deployment and recovery runbook](operations-runbook.md)
+- [Project roadmap](project-roadmap.md)
+- [Official course project rubric](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md)

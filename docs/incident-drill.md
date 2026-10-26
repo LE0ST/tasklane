@@ -1,6 +1,6 @@
 # Issue #3 — User-Impact 5xx Alert and Local Incident Drill
 
-**Status:** End-to-end local firing and recovery were verified in [GitHub Actions run 40221894536](https://github.com/LE0ST/tasklane/actions/runs/40221894536). Independent Astra/Sol review and maintainer merge authorization remain pending. All changes are limited to the disposable, local observability Compose stack. The live Render and Neon services must not be used for this drill.
+**Status (October 25, 2026):** Implemented in [PR #8](https://github.com/LE0ST/tasklane/pull/8), squash-merged to `main` at [`9968999`](https://github.com/LE0ST/tasklane/commit/996899924f04d3abe02ca5fd1d1578ad06e554c8). The [merged-main CI run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed all four jobs, including real local Grafana firing/resolved evidence. Render subsequently deployed the same SHA. No fault injection or remediation was performed against production Render/Neon.
 
 ## What we detect
 The versioned Grafana-managed `TaskLane5xxRate` rule evaluates the dedicated aggregate counter `sum(increase(tasklane_task_5xx_errors_total[2m]))`, which counts HTTP 5xx responses strictly across TaskLane task endpoints (`/api/tasks`, `/api/tasks/{task_id}`). It evaluates every 10s and alerts when at least one task-request 5xx was seen in a sliding 2-minute window. It **does not** alert on CPU-only metrics, expected 4xx responses, static files, or health-check requests.

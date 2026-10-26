@@ -161,4 +161,4 @@ graph LR
 
 - **Metrics:** `tasklane_http_requests_total` and `tasklane_http_duration` exported counter/histogram; labels are bounded HTTP method, templated route and status code, never task content or raw IDs.
 - **Traces:** FastAPI HTTP request spans correlate with structured application logs using a unique `trace_id`; SQLAlchemy database spans are not currently instrumented.
-- **Logs:** Structured request metadata linked by `trace_id` and `span_id`, with no request bodies, task titles, connection strings or credentials. The incident responder in the diagram remains planned for Issue #4.
+- **Logs:** Structured request metadata linked by `trace_id` and `span_id`, with no request bodies, task titles, connection strings or credentials. The optional incident responder is now in merged [PR #9](https://github.com/LE0ST/tasklane/pull/9) (`main` squash `7c73446`). Its real local Grafana-to-responder delivery and read-only correlation have CI evidence; the separate deterministic mock repair is not a model-authored fix. No production responder deployment is claimed.
