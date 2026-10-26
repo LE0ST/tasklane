@@ -14,7 +14,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import COLLECTOR_TIMEOUT_SECONDS, LOKI_SERVICE_NAME
 
