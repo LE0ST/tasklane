@@ -578,8 +578,9 @@ def test_delayed_failure_of_incident_a_does_not_clear_incident_b():
     firing_payload = {
         "status": "firing",
         "alerts": [{
+            "fingerprint": "fp_delayed_fail_b",
+            "startsAt": "2026-10-25T11:00:00Z",
             "labels": {"alertname": EXPECTED_ALERT_NAME},
-            "occurrence_id": "occ_b_test",
         }],
     }
     code_b, data_b = _post_json("/alerts", firing_payload)
@@ -1148,6 +1149,228 @@ def test_malformed_alerts_cannot_mutate_lifecycle_state():
     assert st_code == 200
     assert st_data.get("current_status") == "diagnosed"
     assert st_data.get("current_incident", {}).get("incident_id") == active_inc_id
+
+
+# ==============================================================================
+# Strict Occurrence Identity Exclusivity Tests (Fix 4: No explicit ID overrides)
+# ==============================================================================
+
+def test_explicit_occurrence_id_ignored_and_cannot_cross_resolve():
+    """Verify that caller-supplied explicit occurrence_id (both top-level and nested under labels)
+    is completely ignored, and occurrence identity is derived exclusively from fingerprint and startsAt.
+    Ensures incidents A and B with the same explicit ID remain distinguishable and delayed resolution of A
+    cannot resolve B.
+    """
+    fp_rule = "fp_rule_exclusive"
+    starts_a = "2026-10-25T10:00:00Z"
+    starts_b = "2026-10-25T11:00:00Z"
+    shared_explicit_id = "shared_explicit_incident_id"
+
+    # 1. Incident A fires with explicit ID both top-level and in labels
+    code_a, data_a = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": fp_rule,
+            "startsAt": starts_a,
+            "occurrence_id": shared_explicit_id,
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": shared_explicit_id,
+            },
+        }],
+    })
+    assert code_a == 200
+    inc_a_id = data_a.get("incident_id")
+    # Verify occurrence identity was derived from fingerprint + startsAt, NOT explicit ID!
+    assert data_a.get("occurrence_id") == f"{fp_rule}_{starts_a}"
+
+    # 2. Incident A resolves
+    code_a_res, data_a_res = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_rule,
+            "startsAt": starts_a,
+            "occurrence_id": shared_explicit_id,
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": shared_explicit_id,
+            },
+        }],
+    })
+    assert code_a_res == 200
+    assert data_a_res.get("status") == "resolved"
+
+    st_code1, st_data1 = _get_json("/status")
+    assert st_code1 == 200
+    assert st_data1.get("current_status") == "resolved"
+
+    # 3. Incident B fires with the EXACT SAME explicit ID but different startsAt
+    code_b, data_b = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": fp_rule,
+            "startsAt": starts_b,
+            "occurrence_id": shared_explicit_id,
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": shared_explicit_id,
+            },
+        }],
+    })
+    assert code_b == 200
+    inc_b_id = data_b.get("incident_id")
+    assert inc_b_id != inc_a_id
+    assert data_b.get("occurrence_id") == f"{fp_rule}_{starts_b}"
+
+    # 4. Delayed resolution for A arrives (bearing the same explicit ID as B!)
+    code_stale, data_stale = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_rule,
+            "startsAt": starts_a,
+            "occurrence_id": shared_explicit_id,
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": shared_explicit_id,
+            },
+        }],
+    })
+    assert code_stale == 200
+    assert data_stale.get("status") == "stale_resolution_ignored"
+    assert data_stale.get("accepted") is False
+
+    # Incident B MUST remain completely intact and diagnosed!
+    st_code2, st_data2 = _get_json("/status")
+    assert st_code2 == 200
+    assert st_data2.get("current_status") == "diagnosed"
+    assert st_data2.get("current_incident", {}).get("incident_id") == inc_b_id
+
+    # 5. Matching resolution for B arrives
+    code_b_res, data_b_res = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": fp_rule,
+            "startsAt": starts_b,
+            "occurrence_id": shared_explicit_id,
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": shared_explicit_id,
+            },
+        }],
+    })
+    assert code_b_res == 200
+    assert data_b_res.get("status") == "resolved"
+
+
+def test_explicit_id_cannot_validate_incomplete_notifications():
+    """Verify that an explicit occurrence_id cannot make an incomplete firing or resolved
+    notification valid. Missing fingerprint or startsAt must always be rejected/ignored.
+    """
+    # 1. Firing with top-level occurrence_id but missing startsAt
+    code1, data1 = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": "fp_test",
+            "occurrence_id": "bypass_attempt",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code1 == 400
+    assert data1.get("error") == "missing_occurrence_identity"
+
+    st_code1, st_data1 = _get_json("/status")
+    assert st_code1 == 200
+    assert st_data1.get("current_status") == "idle"
+
+    # 2. Firing with nested labels.occurrence_id but missing fingerprint
+    code2, data2 = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "startsAt": "2026-10-25T10:00:00Z",
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": "bypass_attempt",
+            },
+        }],
+    })
+    assert code2 == 400
+    assert data2.get("error") == "missing_occurrence_identity"
+
+    st_code2, st_data2 = _get_json("/status")
+    assert st_code2 == 200
+    assert st_data2.get("current_status") == "idle"
+
+    # 3. Firing with occurrence_id alone (no fingerprint and no startsAt)
+    code3, data3 = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "occurrence_id": "bypass_attempt",
+            "labels": {
+                "alertname": EXPECTED_ALERT_NAME,
+                "occurrence_id": "bypass_attempt",
+            },
+        }],
+    })
+    assert code3 == 400
+    assert data3.get("error") == "missing_occurrence_identity"
+
+    st_code3, st_data3 = _get_json("/status")
+    assert st_code3 == 200
+    assert st_data3.get("current_status") == "idle"
+
+    # 4. Establish genuine active diagnosed incident C
+    code_c, data_c = _post_json("/alerts", {
+        "status": "firing",
+        "alerts": [{
+            "fingerprint": "fp_c_test",
+            "startsAt": "2026-10-25T15:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_c == 200
+    inc_c_id = data_c.get("incident_id")
+
+    # (a) Send resolved alert with explicit ID but missing startsAt
+    code_res_inc1, data_res_inc1 = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": "fp_c_test",
+            "occurrence_id": "bypass_attempt",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_res_inc1 == 200
+    assert data_res_inc1.get("status") == "ambiguous_resolution_ignored"
+
+    # (b) Send resolved alert with explicit ID alone (no fingerprint or startsAt)
+    code_res_inc2, data_res_inc2 = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "occurrence_id": "bypass_attempt",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_res_inc2 == 200
+    assert data_res_inc2.get("status") == "ambiguous_resolution_ignored"
+
+    # Active incident C must remain diagnosed
+    st_code4, st_data4 = _get_json("/status")
+    assert st_code4 == 200
+    assert st_data4.get("current_status") == "diagnosed"
+    assert st_data4.get("current_incident", {}).get("incident_id") == inc_c_id
+
+    # 5. Matching genuine resolution resolves incident C
+    code_c_res, data_c_res = _post_json("/alerts", {
+        "status": "resolved",
+        "alerts": [{
+            "fingerprint": "fp_c_test",
+            "startsAt": "2026-10-25T15:00:00Z",
+            "labels": {"alertname": EXPECTED_ALERT_NAME},
+        }],
+    })
+    assert code_c_res == 200
+    assert data_c_res.get("status") == "resolved"
+
 
 
 

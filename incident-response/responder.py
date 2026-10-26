@@ -72,25 +72,13 @@ def extract_alert_occurrence_id(alert: Dict[str, Any]) -> Optional[str]:
     - fingerprint: unique hash representing the alert rule and label set.
     - startsAt: ISO timestamp when this specific firing occurrence began.
     
-    Requirements:
-    1. For production Grafana webhooks, complete occurrence identity strictly REQUIRES
-       both non-empty `fingerprint` AND non-empty `startsAt`.
-    2. Alternatively, an explicit non-empty `occurrence_id` (used by synthetic drills
-       and tests) is accepted if distinct from the generic rule name.
-    3. NEVER fall back to `fingerprint`-only, `startsAt`-only, or `alertname`-only,
-       which repeat across sequential incidents and lead to cross-incident collisions.
+    Occurrence identity is derived EXCLUSIVELY from non-empty `fingerprint` AND `startsAt`.
+    Caller-supplied explicit `occurrence_id` tags (including `labels.occurrence_id`) are
+    never allowed to replace, bypass, or make complete an incomplete notification, preventing
+    cross-incident collisions when explicit IDs repeat across distinct alert occurrences.
     """
     if not isinstance(alert, dict):
         return None
-
-    labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
-
-    # Check for explicit occurrence_id tag (guarded: must not be just alertname or empty)
-    explicit_id = alert.get("occurrence_id") or labels.get("occurrence_id")
-    if explicit_id and isinstance(explicit_id, str):
-        stripped = explicit_id.strip()
-        if stripped and stripped != EXPECTED_ALERT_NAME:
-            return stripped
 
     fingerprint = str(alert.get("fingerprint") or "").strip()
     starts_at = str(alert.get("startsAt") or "").strip()
