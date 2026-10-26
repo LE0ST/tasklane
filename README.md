@@ -4,7 +4,7 @@
 [![Live Demo](https://img.shields.io/badge/Render-Live%20Demo-brightgreen)](https://tasklane-app.onrender.com)
 [![Course](https://img.shields.io/badge/DataTalks.Club-AI%20Dev%20Tools%20Zoomcamp-blue)](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp)
 
-TaskLane is a publicly deployed educational full-stack Mini Kanban Board. It demonstrates spec-first implementation, an isolated PostgreSQL-backed local stack, automated CI/CD, correlated local observability, and user-impact alerting. The optional on-call feature is under independent review; no AI-generated code repair is claimed.
+TaskLane is a publicly deployed educational full-stack Mini Kanban Board. It demonstrates spec-first implementation, an isolated PostgreSQL-backed local stack, automated CI/CD, correlated local observability, and user-impact alerting. The optional local-only on-call diagnosis feature is now merged; no AI-generated code repair is claimed.
 
 - **Live Application URL**: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - **Interactive OpenAPI Docs**: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
@@ -37,7 +37,7 @@ This project was developed across the **AI Dev Tools Zoomcamp 2026** by DataTalk
    - Established specialized multi-agent engineering workflow and modular documentation ([`docs/teams.md`](docs/teams.md), [`docs/process.md`](docs/process.md), [`docs/architecture.md`](docs/architecture.md), [`docs/project-roadmap.md`](docs/project-roadmap.md)).
    - Established public issue tracking covering Project 1 deliverables ([GitHub Issues #1–#5](https://github.com/LE0ST/tasklane/issues)).
    - Merged opt-in local OpenTelemetry, Prometheus/Loki/Tempo/Grafana correlation in [PR #7](https://github.com/LE0ST/tasklane/pull/7) and a real task-operation 5xx Grafana firing/recovery drill in [PR #8](https://github.com/LE0ST/tasklane/pull/8).
-   - Prepared an isolated read-only on-call diagnosis feature and a **deterministic mock** repair demonstration in [Draft PR #9](https://github.com/LE0ST/tasklane/pull/9), pending independent approval and human merge authorization. A real coding model has **not** been shown to fix the bug.
+   - Merged the limited local-only, read-only on-call responder via [PR #9](https://github.com/LE0ST/tasklane/pull/9) (squash commit `7c73446`). Its real Grafana-triggered diagnosis is distinct from the separate **deterministic mock** repair demonstration. A real coding model has **not** been shown to fix the bug.
 
 ---
 
@@ -92,7 +92,7 @@ graph TD
 | **Database & ORM** | Neon PostgreSQL 16 (`import` branch), SQLAlchemy 2.0, Alembic | Active verified serverless persistence, schema migrations (`1ea1353bfe87`) |
 | **Former Database** | Render PostgreSQL 16 (`tasklane-db`) | Temporary reference source (expiring October 24, 2026) |
 | **Containerization** | Docker, Multi-stage builds, Docker Compose | Node 20 builder + Python 3.11 slim runtime, pinned `uv:0.12.18` |
-| **Testing** | `pytest`, `httpx`, `@playwright/test` | 76 backend tests on merged `main`; 9 browser scenarios; 46 additional on-call tests only in Draft PR #9 |
+| **Testing** | `pytest`, `httpx`, `@playwright/test` | 76 backend + 54 on-call tests in PR #9 CI; 9 browser scenarios; postmerge main CI verification in progress |
 | **CI/CD** | GitHub Actions | Automated builds, migrations, smoke checks, Playwright E2E |
 | **Cloud Hosting** | Render Web Service + Neon PostgreSQL | Docker Web Service + Serverless PostgreSQL 16 |
 
@@ -238,7 +238,7 @@ uv sync --frozen
 uv run pytest -v --strict-markers
 ```
 
-At merged `main` commit `9968999`, [Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed **76 backend tests** and all four CI jobs. The backend job provisions PostgreSQL 16, creates a dedicated test database, applies Alembic migrations, and runs unit plus integration tests. The browser job tests the running Compose app with Playwright/Chromium (nine E2E scenarios). No production database is used in CI.
+At merged `main` commit `9968999`, [Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed **76 backend tests** and all four CI jobs. PR #9 was subsequently squash-merged to `main` as `7c73446`; [postmerge Actions run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) is the next deployment gate and must be checked independently before claiming success. The backend job provisions PostgreSQL 16, creates a dedicated test database, applies Alembic migrations, and runs unit plus integration tests. The browser job tests the running Compose app with Playwright/Chromium (nine E2E scenarios). No production database is used in CI.
 
 Optional local telemetry and real Grafana 5xx firing/recovery are verified using:
 ```bash
@@ -249,7 +249,7 @@ python3 observability/incident_smoke.py
 docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 ```
 
-To reproduce the **on-call diagnosis-only overlay** once [Draft PR #9](https://github.com/LE0ST/tasklane/pull/9) is merged, follow its `docs/oncall-drill.md` and add `-f docker-compose.oncall.yml`. The PR currently reports [four successful jobs and 76 backend + 46 on-call tests](https://github.com/LE0ST/tasklane/actions/runs/40265085450). These PR-specific files and tests are **not yet part of merged main**. Real Grafana-to-responder delivery is separately verified; mock repair does not prove AI-authored remediation.
+To reproduce the **on-call diagnosis-only overlay** merged in [PR #9](https://github.com/LE0ST/tasklane/pull/9), use the [on-call drill guide](https://github.com/LE0ST/tasklane/blob/main/docs/oncall-drill.md) and add `-f docker-compose.oncall.yml` to the local observability stack. [PR CI 40272231320](https://github.com/LE0ST/tasklane/actions/runs/40272231320) passed four jobs with 76 backend + 54 on-call tests. Real Grafana-to-responder delivery is verified; mock fixture repair does **not** prove AI-authored remediation.
 
 The [CI workflow](.github/workflows/ci.yml) runs on PRs and pushes to `main` and contains four jobs:
 
@@ -296,7 +296,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete system topology, container layers, and Neon database integration |
 | **Local Observability Demo** | [`docs/observability.md`](docs/observability.md) | Optional OTel stack, reproducible CI correlation evidence, metrics/logs/traces and Grafana instructions |
 | **Local Incident Drill** | [`docs/incident-drill.md`](docs/incident-drill.md) | Versioned Grafana 5xx alert and webhook, guarded 503 injection, reproducible firing/recovery evidence |
-| **On-Call Responder (pending)** | [Draft PR #9](https://github.com/LE0ST/tasklane/pull/9) | Real Grafana-triggered diagnosis and independent mock-only repair evidence; do not claim AI-generated remediation |
+| **On-Call Responder (merged, local-only)** | [PR #9](https://github.com/LE0ST/tasklane/pull/9) | Real Grafana-triggered read-only diagnosis; separate deterministic mock-only repair, not an AI-generated fix |
 | **Evidence & Traceability** | [`docs/evidence-traceability.md`](docs/evidence-traceability.md) | Issue → PR → commit → CI chain and evidence boundaries |
 | **Operations & Recovery** | [`docs/operations-runbook.md`](docs/operations-runbook.md) | Render/Neon verification, rollback decision tree and DB safety |
 | **Submission Checklist** | [`docs/submission-checklist.md`](docs/submission-checklist.md) | Exact submission SHA, peer review obligations and remaining gates |
@@ -311,7 +311,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | [#1 — Team, process, modular docs](https://github.com/LE0ST/tasklane/issues/1) | Closed | [PR #6](https://github.com/LE0ST/tasklane/pull/6), merged `f6f4c7b` |
 | [#2 — Correlated observability](https://github.com/LE0ST/tasklane/issues/2) | Closed | [PR #7](https://github.com/LE0ST/tasklane/pull/7), merged `cc9cce7` |
 | [#3 — User-impact alert and drill](https://github.com/LE0ST/tasklane/issues/3) | Closed | [PR #8](https://github.com/LE0ST/tasklane/pull/8), merged `9968999` |
-| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open | [Draft PR #9](https://github.com/LE0ST/tasklane/pull/9), security/SRE audit pending; AI-generated fix not proven |
+| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446`; approved limited diagnosis-only scope, full model-authored remediation not demonstrated |
 | [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | Documentation/evidence work in progress; final submission SHA pending |
 
 See [the detailed traceability matrix](docs/evidence-traceability.md) for CI links, reviewer handoffs, and precise claims.
@@ -320,7 +320,7 @@ See [the detailed traceability matrix](docs/evidence-traceability.md) for CI lin
 
 ## Operations, Rollback & Submission
 
-Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The latest verified live `main` deployment for this documentation baseline is `9968999`.
+Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The last independently confirmed `live` Render deployment was `9968999`; the newer main commit `7c73446` has been merged and its deployment verification is pending.
 
 **Application rollback is not database rollback.** First select a previously healthy compatible commit/deploy in the Render dashboard, check application health and compatibility with the current Alembic schema, then verify read-only database state. Never trigger `alembic downgrade` or restore production data as an automatic response to a bad app deploy. There is no independently verified backup snapshot claimed here.
 

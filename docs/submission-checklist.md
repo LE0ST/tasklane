@@ -1,15 +1,15 @@
 # TaskLane — Final Submission and Peer-Review Checklist
 
-**As-of:** October 25, 2026. **Purpose:** prevent inflated claims, stale SHAs, broken instructions and missing course peer reviews. The authoritative deadline and submission workflow live on the [DataTalksClub course platform](https://courses.datatalks.club/ai-dev-tools-2026/); do not assume a platform deadline time zone.
+**As-of:** October 26, 2026. **Purpose:** prevent inflated claims, stale SHAs, broken instructions and missing course peer reviews. The authoritative deadline and submission workflow live on the [DataTalksClub course platform](https://courses.datatalks.club/ai-dev-tools-2026/); do not assume a platform deadline time zone.
 
 ## Public submission metadata
 
 - Repository: [https://github.com/LE0ST/tasklane](https://github.com/LE0ST/tasklane)
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
-- **Merged `main` baseline (verified):** `996899924f04d3abe02ca5fd1d1578ad06e554c8`.
+- **Merged `main` HEAD verified:** `7c7344690bf3260297301a14f434d00cb6eb123a` (squash PR #9). Postmerge CI and Render deploy are checked separately.
 - **Final submission commit SHA: PENDING.** Record the exact final `main` commit SHA only after all authorized PR merges and final CI/deploy checks.
-- Draft on-call responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), HEAD `ef534630d87b806187df9ec58e8209ba92d30325` as of this snapshot, **not part of main yet**.
+- Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; **no real AI-generated repair**.
 - Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
 
 ## Final gate checklist — update only when evidence exists
@@ -22,8 +22,9 @@
 - [x] Local Grafana user-impact task 503 firing and resolved notifications demonstrated; no production fault injection.
 - [x] Render service/deploy status and Neon existing row count verified read-only on October 25.
 - [x] Production-safe app rollback and database recovery **procedures** documented; no actual production rollback or backup restore is claimed.
-- [ ] Receive independent Sol/Astra approval for the final reviewed PR #9 HEAD.
-- [ ] If approved, obtain explicit maintainer authorization and merge PR #9; revalidate CI and Render/Neon read-only.
+- [x] Receive external independent security and SRE approval for PR #9's limited diagnosis-only scope (Sol reviewed earlier security HEAD; Astra approved final identity-only HEAD).
+- [x] Obtain explicit maintainer approval and squash-merge PR #9 as `7c73446`.
+- [ ] Finish verifying merged-main CI and Render deployment; recheck Neon without modifying data.
 - [ ] Merge Issue #5 documentation PR only after review and explicit maintainer approval; capture its final merged SHA and passing CI.
 - [ ] Verify public demo and application behavior without adding or changing production tasks.
 - [ ] Record final `main` commit SHA and linked Actions deployment evidence in submission.
@@ -32,7 +33,7 @@
 
 ## Do not overstate
 
-- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the PR. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. No live coding model generated the tested repair. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
+- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. No live coding model generated the tested repair. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
 - **CI/CD:** CI covers four jobs and Render auto-deploys on passing checks. No staging-to-manual-production pipeline is claimed.
 - **Production database:** Current Neon SELECT evidence is read-only; historical Render DB condition was not reverified. No fresh production data mutation or independently verified backup is claimed.
 - **Security audit:** Astra and Sol provide external read-only reports/PR comments. Do not misrepresent their analyses as native GitHub reviews or approval to merge.

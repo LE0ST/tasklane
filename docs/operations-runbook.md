@@ -1,6 +1,6 @@
 # TaskLane — Deployment, Continuity and Rollback Runbook
 
-**Scope:** educational public demo + production-safe read-only verification. **Baseline observed:** `main` commit `9968999`; Render Docker Web Service `tasklane-app` on `main`; Neon PostgreSQL 16 branch `import`, database `neondb`.
+**Scope:** educational public demo + production-safe read-only verification. **Merged source baseline:** `main` commit `7c73446`; Render Docker Web Service `tasklane-app` on `main`; Neon PostgreSQL 16 branch `import`, database `neondb`.
 
 ## 1. Reproduce locally without touching production
 
@@ -22,14 +22,14 @@ python3 observability/incident_smoke.py
 docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 ```
 
-After Draft [PR #9](https://github.com/LE0ST/tasklane/pull/9) is explicitly approved and merged, its `docker-compose.oncall.yml` may be added for local-only **read-only** diagnosis; never treat its mock fix as autonomous AI remediation.
+[Merged PR #9](https://github.com/LE0ST/tasklane/pull/9) provides an optional `docker-compose.oncall.yml` overlay for local-only **read-only** diagnosis. Use the documented [on-call procedure](https://github.com/LE0ST/tasklane/blob/main/docs/oncall-drill.md). Never treat its mock fixture fix as autonomous AI remediation.
 
 ## 2. CI/CD and public health verification
 
-- GitHub Actions CI runs on pull requests to `main` and commits pushed to `main`. Four jobs cover frontend bundle, backend/PostgreSQL migrations/tests, Docker/Playwright and local OpenTelemetry/Grafana real 503 alert lifecycle. Last merged-main [run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed all four jobs.
+- GitHub Actions CI runs on pull requests to `main` and commits pushed to `main`. Four jobs cover frontend bundle, backend/PostgreSQL migrations/tests, Docker/Playwright and local OpenTelemetry/Grafana real 503 alert lifecycle. Last completed previously verified merged-main [run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed four jobs; the new [postmerge run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) for main `7c73446` is pending final confirmation.
 - Render service `tasklane-app` is wired to GitHub `main` and configured with `autoDeployTrigger=checksPass`. **No distinct staging promotion gate is configured or claimed.** The Docker entrypoint serves app HTTP; health path is `/health`.
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com); API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs). Free-plan cold starts may delay health responses. **Do not insert synthetic incident headers or write probes into production**.
-- Last checked deployment was marked `live` for SHA `996899924f04d3abe02ca5fd1d1578ad06e554c8`. Deploy status alone does not substitute for a fresh read-only HTTP probe; record it separately if performed.
+- Last independently confirmed `live` deployment was `9968999`; postmerge Render deployment of `7c73446` is being verified. Deploy status alone does not substitute for a fresh read-only HTTP probe.
 
 ## 3. Neon connection and persistence verification (read-only)
 
@@ -69,6 +69,6 @@ FROM public.tasks;
 | Render production | Neon `import` / `neondb` | Optional local OTel flags not enabled | **Not enabled** |
 | Standard local Compose | Local PostgreSQL 16 volume | Base application only | Not enabled |
 | Optional observability Compose | Separate disposable local PostgreSQL 16 | Prometheus/Loki/Tempo/Grafana, real local 503 | No production writes |
-| On-call overlay (Draft PR #9) | Disposable local stack | Real Grafana→responder read-only triage | Only deterministic fixture demo, not a real AI fix |
+| On-call overlay (merged PR #9; opt-in local-only) | Disposable local stack | Real Grafana→responder read-only triage | Deterministic fixture demo only, **not** real AI remediation |
 
 See [evidence traceability](evidence-traceability.md) and [submission checklist](submission-checklist.md).
