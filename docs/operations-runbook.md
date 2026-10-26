@@ -1,6 +1,6 @@
 # TaskLane — Deployment, Continuity and Rollback Runbook
 
-**Scope:** educational public demo + production-safe read-only verification. **Recorded verified source baseline:** commit `946b582` after PRs #10 and #11; Render Docker Web Service `tasklane-app` on `main`; Neon PostgreSQL 16 branch `import`, database `neondb`.
+**Scope:** educational public demo + production-safe read-only verification. **Current verified candidate:** commit `dd9a52696a961f58d2c5064a926b2c8082a333cf`; Render Docker Web Service `tasklane-app` on `main`; Neon PostgreSQL 16 branch `import`, database `neondb`.
 
 ## 1. Reproduce locally without touching production
 
@@ -26,10 +26,10 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 
 ## 2. CI/CD and public health verification
 
-- GitHub Actions CI runs on pull requests to `main` and commits pushed to `main`. Four jobs cover frontend bundle, backend/PostgreSQL migrations/tests, Docker/Playwright and local OpenTelemetry/Grafana real 503 alert lifecycle. The [merged-main Actions run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed 4/4 jobs for `7c73446`; Render subsequently reported that same deploy as `live`.
+- GitHub Actions CI runs on pull requests to `main` and commits pushed to `main`. Four jobs cover frontend bundle, backend/PostgreSQL migrations/tests, Docker/Playwright and local OpenTelemetry/Grafana real 503 alert lifecycle. Latest verified `main`: [Actions run 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699) passed 4/4 for `dd9a52696a961f58d2c5064a926b2c8082a333cf`; Astra's read-only Render check confirmed its matching deploy `live`. Earlier run 40273628271 remains evidence for the `7c73446` on-call change.
 - Render service `tasklane-app` is wired to GitHub `main` and configured with `autoDeployTrigger=checksPass`. **No distinct staging promotion gate is configured or claimed.** The Docker entrypoint serves app HTTP; health path is `/health`.
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com); API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs). Free-plan cold starts may delay health responses. **Do not insert synthetic incident headers or write probes into production**.
-- The October 26 [verification recorded in Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915) records `946b582` as `live` (deploy `dep-dbfg9o2jnfac73ens3fg`), [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535) 4/4 successful, and an independent public `/health` response of `{"status":"healthy"}`. No app rollback or production write probe was executed. Later commits require new verification; deploy status alone does not substitute for a public HTTP probe.
+- The earlier October 26 [verification recorded in Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915) records `946b582` as `live` and its public `/health` response as `{"status":"healthy"}`. The current candidate `dd9a52696a961f58d2c5064a926b2c8082a333cf` passed [CI 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699) and was read-only verified `live` on Render; no fresh public health probe was made for that later SHA. No rollback or production write probe was executed.
 
 ## 3. Neon connection and persistence verification (read-only)
 
