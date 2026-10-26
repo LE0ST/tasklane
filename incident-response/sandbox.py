@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -545,3 +546,71 @@ def run_disposable_tests(workspace_path: Path, incident_id: Optional[str] = None
     )
     output = f"{stdout}\n{stderr}".strip()[:MAX_OUTPUT_BYTES]
     return (ret == 0), output
+
+
+def validate_safe_target_file(target_file: Path, workspace_root: Path) -> Path:
+    """Validate that target_file exists, is a regular file within workspace_root, and contains NO symlinks.
+
+    Rejects symlinked target files, symlinks in ancestor directories, and paths escaping workspace_root.
+    """
+    resolved_ws = workspace_root.resolve()
+    resolved_file = target_file.resolve()
+
+    if target_file.is_symlink():
+        raise SecurityViolation(f"Target file is a symlink: {target_file}")
+
+    # Verify no parent directory between target_file and workspace_root is a symlink
+    curr = target_file.parent
+    while curr != workspace_root and curr != curr.parent:
+        if curr.is_symlink():
+            raise SecurityViolation(f"Target path ancestor is a symlink: {curr}")
+        if curr.resolve() == resolved_ws:
+            break
+        curr = curr.parent
+
+    # Containment check: resolved file must start with resolved workspace root
+    try:
+        resolved_file.relative_to(resolved_ws)
+    except ValueError:
+        raise SecurityViolation(f"Target file {resolved_file} escapes workspace {resolved_ws}")
+
+    if not resolved_file.exists():
+        raise FileNotFoundError(f"Target file not found: {resolved_file}")
+
+    if not resolved_file.is_file():
+        raise SecurityViolation(f"Target file is not a regular file: {resolved_file}")
+
+    return resolved_file
+
+
+def atomic_write_file(target_file: Path, content: str, encoding: str = "utf-8") -> None:
+    """Atomically write content to target_file using a temporary file in the same directory."""
+    target_dir = target_file.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f".tmp_{target_file.name}_"
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=target_dir, prefix=prefix, delete=False, encoding=encoding) as tf:
+            tmp_path = Path(tf.name)
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_path, target_file)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def is_isolated_worker_available() -> bool:
+    """Check if an independently isolated test worker (with disabled network and filesystem boundary) is active.
+
+    In the project environment, host-level subprocess execution cannot block direct TCP socket egress.
+    Therefore, host execution of untrusted code is blocked by default pending verified container worker deployment.
+    """
+    return os.environ.get("TASKLANE_ISOLATED_WORKER_ENABLED", "false").lower() == "true"
+
