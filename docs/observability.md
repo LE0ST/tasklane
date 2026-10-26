@@ -1,6 +1,6 @@
 # TaskLane — Optional Local OpenTelemetry Observability Stack (Issue #2)
 
-**Status:** Updated to resolve Consolidated QA/SRE Audit findings from **GPT-6 Astra Medium** and **GPT-6.1 Sol Medium**. The local OpenTelemetry stack provides fail-open request telemetry, sensitive exception redaction, local-only database isolation, fixed exec-form healthchecks, localhost port bindings, and Grafana log-to-trace navigation. This stack is **local-only**, strictly disabled on Render production, and requires human maintainer authorization before merging.
+**Status (October 25, 2026):** The opt-in, local-only observability stack was merged through [PR #7](https://github.com/LE0ST/tasklane/pull/7) as [`cc9cce7`](https://github.com/LE0ST/tasklane/commit/cc9cce7fb27ad3b769e8d4fcf3164f597d4a7fb8). Security/SRE review findings were addressed before the human-authorized merge. This module remains disabled by default on production Render, while the additional user-impact alert was subsequently merged in PR #8. For latest passing combined evidence see [CI 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032).
 
 ---
 
