@@ -9,7 +9,7 @@
 According to the official **AI Dev Tools Zoomcamp 2026** course rubric:
 - **On-Call Agent (2 points):** An agent wakes up on an alert and **fixes the issue**. A passive webhook receiver that only outputs diagnostic logs is insufficient.
 
-TaskLane implements a bounded on-call remediation system adhering to least-privilege principles:
+TaskLane implements a bounded, local-only **diagnostic responder** and a separate **mock-only remediation exercise** with least-privilege application-level controls. It does not yet demonstrate a real autonomous AI fix:
 1. **Wakes Up on Alert:** Receives real local Grafana `TaskLane5xxRate` webhook notifications on `POST /alerts` (port 8001).
 2. **Read-Only Diagnosis by Default:** Correlates local Prometheus metrics (`tasklane_task_5xx_errors_total`), structured Loki logs (`{service_name="tasklane-api"}` for `/api/tasks` 5xx), and Tempo SERVER ERROR spans without granting write permissions (`write_authorized: false`).
 3. **Strict Network-Facing Read-Only Policy:** Network-facing repair is disabled by default in normal service mode (`/authorize-repair` returns HTTP 403 `repair_disabled`). HTTP repair is permitted only when explicitly enabled locally for isolated demonstration via `TASKLANE_ALLOW_HTTP_REPAIR=true`.
@@ -39,8 +39,8 @@ flowchart TD
         AuthGate["Operator Authorization Gate<br/>POST /authorize-repair<br/>(X-Operator-Token Header)"]
         OpCLI["Local Operator CLI<br/>(operator_cli.py)"]
         Registry["Workspace Registry<br/>(Incident ID -> Path)"]
-        Sandbox["Disposable Sandbox Runner<br/>(Env Allowlist & Process Isolation)"]
-        Adapter["Agent Adapter<br/>(Mock / Codex CLI)"]
+        Sandbox["Disposable Test Runner<br/>(Application Policy; Not OS Isolation)"]
+        Adapter["Agent Adapter<br/>(Mock; Codex Writes Disabled)"]
     end
 
     subgraph Service-Owned Disposable Containment
@@ -54,13 +54,13 @@ flowchart TD
     Collector --> Tempo
     Collector --> DiagGate
     DiagGate -->|Read-Only| Adapter
-    Receiver -->|Generate Single-Use Token| TokenStore
-    Receiver -->|Register Workspace| Registry
+    Receiver -->|Local Opt-In Mock Drill Only| TokenStore
+    Receiver -->|Local Opt-In Mock Drill Only| Registry
 
     OpCLI -->|Read Local Token| TokenStore
     OpCLI -->|Authenticated POST| AuthGate
     AuthGate -->|Consume Token & Verify Registry| Sandbox
-    Sandbox -->|Isolated Child Process| Adapter
+    Sandbox -->|Restricted Subprocess; Not Kernel Sandbox| Adapter
     Adapter -->|Apply Code Diff| DispWS
     Sandbox -->|Run Pytest & HTTP Verification| DispWS
 ```
