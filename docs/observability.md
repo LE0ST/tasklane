@@ -167,7 +167,7 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 
 ### 4.1 Test Counts
 - **76 backend tests** passed at the merged-main baseline `9968999` in [GitHub Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032). This current total combines API, incident-alert validation, telemetry, and PostgreSQL integration tests; it supersedes the historical 38-test count from the initial Issue #2 implementation.
-- **46 additional on-call responder tests** run only in [Draft PR #9](https://github.com/LE0ST/tasklane/pull/9) as of [run 40265085450](https://github.com/LE0ST/tasklane/actions/runs/40265085450), not in the merged-main baseline.
+- **54 additional on-call responder tests** passed in [merged PR #9](https://github.com/LE0ST/tasklane/pull/9), [PR CI 40272231320](https://github.com/LE0ST/tasklane/actions/runs/40272231320), and its [merged-main CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271). They verify the local-only diagnostic responder, not live AI-authored repair.
 
 ### 4.2 Telemetry Test Breakdown (`backend/tests/test_telemetry.py`)
 The telemetry and isolation tests verify:

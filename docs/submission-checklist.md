@@ -18,9 +18,9 @@
 - [x] Public Issues #1–#5 have acceptance criteria, and merged Issue #1–#3 history is linked.
 - [x] Agent team, role boundaries, and modular AGENTS.md guidance documented.
 - [x] One-command Docker Compose stack with local PostgreSQL is implemented and tested in CI.
-- [x] Backend tests, PostgreSQL integration, Alembic migrations, Playwright and local observability CI passed at merged `main` SHA `9968999` ([run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032)).
+- [x] Backend, PostgreSQL, Alembic, Playwright, and local telemetry/on-call CI passed at merged `main` SHA `7c73446` ([run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271), 4/4 jobs; 76 backend + 54 responder tests).
 - [x] Local Grafana user-impact task 503 firing and resolved notifications demonstrated; no production fault injection.
-- [x] Render service/deploy status and Neon existing row count verified read-only on October 25.
+- [x] Render service/deploy status and Neon existing row count verified read-only through October 26.
 - [x] Production-safe app rollback and database recovery **procedures** documented; no actual production rollback or backup restore is claimed.
 - [x] Receive external independent security and SRE approval for PR #9's limited diagnosis-only scope (Sol reviewed earlier security HEAD; Astra approved final identity-only HEAD).
 - [x] Obtain explicit maintainer approval and squash-merge PR #9 as `7c73446`.
@@ -28,8 +28,24 @@
 - [ ] Merge Issue #5 documentation PR only after review and explicit maintainer approval; capture its final merged SHA and passing CI.
 - [ ] Verify public demo and application behavior without adding or changing production tasks.
 - [ ] Record final `main` commit SHA and linked Actions deployment evidence in submission.
-- [ ] Confirm exact deadline, complete course-platform submission, and save proof of submission.
+- [x] Verify published Project 1 deadline: **October 26, 2026 at 23:00**, displayed in the viewer's timezone on the [course project page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
+- [ ] Complete course-platform submission while logged in, and save proof of submission.
 - [ ] **Complete three required peer reviews** of other participants on the course platform and retain evidence of each. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit.
+
+## Actual Project 1 submission form (confirmed October 26, 2026)
+
+Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools-2026/project/project1), log in, and submit **before October 26, 2026 at 23:00 as displayed in your timezone**. The publicly visible form asks for:
+
+| Form field | What to enter |
+|---|---|
+| GitHub link to the project | `https://github.com/LE0ST/tasklane` |
+| Commit ID | **Exact final merged `main` SHA** after PR #10 review, merge, and final verification; NOT its premerge feature-branch HEAD |
+| Learning in public links (optional) | Up to 14 relevant public progress posts; only if already published |
+| Time spent on project (hours) | The maintainer's actual hours; **do not invent** a number |
+| FAQ contribution PR or issue URL (optional) | Only an actual qualifying contribution |
+| Certificate name | The name the maintainer wants printed on the certificate |
+
+**Submission and peer review are separate obligations.** Saving a project does not satisfy the requirement to review three other participants' projects. After submitting, use the platform's review assignments/instructions, score **three** projects using the [official rubric](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md), and retain completion evidence. The public unauthenticated page does not expose the participant-specific review workflow.
 
 ## Do not overstate
 

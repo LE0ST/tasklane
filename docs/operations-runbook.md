@@ -44,7 +44,7 @@ SELECT COUNT(*) AS total,
 FROM public.tasks;
 ```
 
-**Observed October 25, 2026:** `total=2`, `migration_check=1`, `revision=1ea1353bfe87`. This is an observation of existing data, **not** a newly created test record. Prior migration checks established the import from Render PostgreSQL; current availability/content of the former Render source is unverified. Do not present the former database as a recovery copy.
+**Read-only verification through October 26, 2026:** `total=2`, `migration_check=1`, `revision=1ea1353bfe87`. This is an observation of existing data, **not** a newly created test record. Prior migration checks established the import from Render PostgreSQL; current availability/content of the former Render source is unverified. Do not present the former database as a recovery copy.
 
 ## 4. Incident and rollback decision tree
 

@@ -92,7 +92,7 @@ graph TD
 | **Database & ORM** | Neon PostgreSQL 16 (`import` branch), SQLAlchemy 2.0, Alembic | Active verified serverless persistence, schema migrations (`1ea1353bfe87`) |
 | **Former Database** | Render PostgreSQL 16 (`tasklane-db`) | Temporary reference source (expiring October 24, 2026) |
 | **Containerization** | Docker, Multi-stage builds, Docker Compose | Node 20 builder + Python 3.11 slim runtime, pinned `uv:0.12.18` |
-| **Testing** | `pytest`, `httpx`, `@playwright/test` | 76 backend + 54 on-call tests in PR #9 CI; 9 browser scenarios; postmerge main CI verification in progress |
+| **Testing** | `pytest`, `httpx`, `@playwright/test` | 76 backend + 54 on-call tests verified on merged `main` (`7c73446`); 9 browser scenarios; all four CI jobs passed |
 | **CI/CD** | GitHub Actions | Automated builds, migrations, smoke checks, Playwright E2E |
 | **Cloud Hosting** | Render Web Service + Neon PostgreSQL | Docker Web Service + Serverless PostgreSQL 16 |
 
@@ -271,7 +271,7 @@ TaskLane is publicly deployed on **Render** with persistent serverless storage o
 - **Deployment Mode**: Render Web Service (Docker Runtime) connected directly to `LE0ST/tasklane` (`main` branch).
 - **Active Production Database**: **Neon Serverless PostgreSQL 16** (`tasklane` project, **`import`** branch, `neondb` database).
 - **Former Source Database**: Render Managed PostgreSQL 16 (`tasklane-db`) was used as a historical migration reference and had an October 24, 2026 expiry. Its current availability was not reverified and it is **not** a backup.
-- **Production Migration Verification**: A prior migration test confirmed new tasks in Neon rather than the then-available Render source database. A fresh **read-only** Neon query on October 25 confirmed two tasks, including the original migration-check task, and Alembic revision `1ea1353bfe87`. No fresh query against the former Render database was performed.
+- **Production Migration Verification**: A prior migration test confirmed new tasks in Neon rather than the then-available Render source database. Read-only Neon queries through October 26 confirmed two tasks, including the original migration-check task, and Alembic revision `1ea1353bfe87`. No fresh query against the former Render database was performed.
 - **Secure Networking**: Web Service communicates with Neon over SSL via a protected `DATABASE_URL` environment variable.
 - **Automatic Migrations**: Alembic migrations run automatically on container startup inside the FastAPI lifespan handler.
 - **Graceful Shutdown**: The Dockerfile entrypoint uses `exec uvicorn` to receive POSIX `SIGTERM` signals directly from Render.
@@ -304,7 +304,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical acceptance criteria (AC-1..AC-10) and validation rules |
 | **OpenAPI Specification** | [`openapi.yaml`](openapi.yaml) | OpenAPI 3.1 REST API contract |
 
-### Public GitHub Issue and Pull Request Status (verified October 25, 2026)
+### Public GitHub Issue and Pull Request Status (verified October 26, 2026)
 
 | Issue | Status | Evidence |
 |---|---|---|
@@ -326,4 +326,4 @@ Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL
 
 See [Operations & Recovery](docs/operations-runbook.md) and [Submission Checklist](docs/submission-checklist.md). No rollback or production mutation was executed while preparing this documentation.
 
-**Course peer review requirement:** three reviews of other participants are mandatory according to the [official project criteria](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md). Completion has not yet been verified. Exact submission deadline and workflow must be confirmed on the course platform.
+**Course peer review requirement:** three reviews of other participants are mandatory according to the [official project criteria](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md). Completion has not yet been verified. The [course Project 1 page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1) shows **October 26, 2026, at 23:00 in the viewer's local timezone** as the submission deadline. It requires a public repository URL and an exact final commit SHA. See the [submission checklist](docs/submission-checklist.md) for platform fields and the mandatory three peer reviews.
