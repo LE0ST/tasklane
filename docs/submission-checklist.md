@@ -28,13 +28,13 @@
 - [ ] Merge Issue #5 documentation PR only after review and explicit maintainer approval; capture its final merged SHA and passing CI.
 - [ ] Verify public demo and application behavior without adding or changing production tasks.
 - [ ] Record final `main` commit SHA and linked Actions deployment evidence in submission.
-- [x] Verify published Project 1 deadline: **October 26, 2026 at 23:00**, displayed in the viewer's timezone on the [course project page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
+- [x] Verify Project 1 deadline against the **authenticated maintainer account**: **October 26, 2026 at 18:00 in the account's configured timezone**. The logged-out public preview instead displayed 23:00 in a different viewer timezone. Follow the authenticated time, not the public preview. [Course page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
 - [ ] Complete course-platform submission while logged in, and save proof of submission.
 - [ ] **Complete three required peer reviews** of other participants on the course platform and retain evidence of each. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit.
 
 ## Actual Project 1 submission form (confirmed October 26, 2026)
 
-Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools-2026/project/project1), log in, and submit **before October 26, 2026 at 23:00 as displayed in your timezone**. The publicly visible form asks for:
+Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools-2026/project/project1), log in, and **save the submission before October 26, 2026 at 18:00 in the maintainer account's displayed timezone**. The authenticated page explicitly permits saving a project and updating its commit SHA before the deadline. Submitting now with a verified green `main` commit avoids losing the whole entry if optional cleanup PRs take longer. The form asks for:
 
 | Form field | What to enter |
 |---|---|

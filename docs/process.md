@@ -88,8 +88,9 @@ flowchart TD
 ### Stage 10: CI Automated Verification (GitHub Actions)
 - On pull request synchronization, the full GitHub Actions workflow ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) executes:
   1. `frontend-build`: Compiles production assets with Vite.
-  2. `backend-tests`: Provisions a fresh `postgres:16-alpine` service, runs Alembic migrations, and executes all 19 pytest tests (including PostgreSQL integration tests).
+  2. `backend-tests`: Provisions a fresh `postgres:16-alpine` service, runs Alembic migrations, and executes 76 backend pytest tests at the reviewed Project 1 baseline (including PostgreSQL integration).
   3. `docker-e2e-smoke`: Builds the multi-stage Docker image, boots Docker Compose, runs HTTP smoke checks, and executes Playwright E2E browser tests in headless Chromium.
+  4. `observability-smoke`: Runs the isolated OpenTelemetry/Grafana stack, verifies metrics/logs/traces, real local task HTTP 503 alert firing/recovery and Grafana-to-on-call diagnosis. The responder's 54 additional tests run in the backend test job.
 
 ### Stage 11: Human Maintainer Approval Gate
 - **Owner:** Human Maintainer (`LE0ST`)
@@ -101,7 +102,7 @@ flowchart TD
 ### Stage 13: Deployment Verification
 - Render automatically builds and deploys the new container from `main`.
 - FastAPI lifespan runs `alembic upgrade head` against the live Neon PostgreSQL database.
-- Production health is verified at `https://tasklane-app.onrender.com/health`.
+- The Render deployment must be checked for a matching `live` commit SHA, Neon with read-only SQL, and an independent HTTP request to `https://tasklane-app.onrender.com/health` when accessible. Do not treat the Render `live` status alone as evidence of an external HTTP health response.
 
 ---
 

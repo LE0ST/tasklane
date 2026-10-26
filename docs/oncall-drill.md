@@ -9,7 +9,7 @@
 According to the official **AI Dev Tools Zoomcamp 2026** course rubric:
 - **On-Call Agent (2 points):** An agent wakes up on an alert and **fixes the issue**. A passive webhook receiver that only outputs diagnostic logs is insufficient.
 
-TaskLane implements a bounded on-call remediation system adhering to least-privilege principles:
+TaskLane implements a bounded, local-only **diagnostic responder** and a separate **mock-only remediation exercise** with least-privilege application-level controls. It does not yet demonstrate a real autonomous AI fix:
 1. **Wakes Up on Alert:** Receives real local Grafana `TaskLane5xxRate` webhook notifications on `POST /alerts` (port 8001).
 2. **Read-Only Diagnosis by Default:** Correlates local Prometheus metrics (`tasklane_task_5xx_errors_total`), structured Loki logs (`{service_name="tasklane-api"}` for `/api/tasks` 5xx), and Tempo SERVER ERROR spans without granting write permissions (`write_authorized: false`).
 3. **Strict Network-Facing Read-Only Policy:** Network-facing repair is disabled by default in normal service mode (`/authorize-repair` returns HTTP 403 `repair_disabled`). HTTP repair is permitted only when explicitly enabled locally for isolated demonstration via `TASKLANE_ALLOW_HTTP_REPAIR=true`.
@@ -39,8 +39,8 @@ flowchart TD
         AuthGate["Operator Authorization Gate<br/>POST /authorize-repair<br/>(X-Operator-Token Header)"]
         OpCLI["Local Operator CLI<br/>(operator_cli.py)"]
         Registry["Workspace Registry<br/>(Incident ID -> Path)"]
-        Sandbox["Disposable Sandbox Runner<br/>(Env Allowlist & Process Isolation)"]
-        Adapter["Agent Adapter<br/>(Mock / Codex CLI)"]
+        Sandbox["Disposable Test Runner<br/>(Application Policy; Not OS Isolation)"]
+        Adapter["Agent Adapter<br/>(Mock; Codex Writes Disabled)"]
     end
 
     subgraph Service-Owned Disposable Containment
@@ -54,13 +54,13 @@ flowchart TD
     Collector --> Tempo
     Collector --> DiagGate
     DiagGate -->|Read-Only| Adapter
-    Receiver -->|Generate Single-Use Token| TokenStore
-    Receiver -->|Register Workspace| Registry
+    Receiver -->|Local Opt-In Mock Drill Only| TokenStore
+    Receiver -->|Local Opt-In Mock Drill Only| Registry
 
     OpCLI -->|Read Local Token| TokenStore
     OpCLI -->|Authenticated POST| AuthGate
     AuthGate -->|Consume Token & Verify Registry| Sandbox
-    Sandbox -->|Isolated Child Process| Adapter
+    Sandbox -->|Restricted Subprocess; Not Kernel Sandbox| Adapter
     Adapter -->|Apply Code Diff| DispWS
     Sandbox -->|Run Pytest & HTTP Verification| DispWS
 ```
@@ -85,7 +85,7 @@ All incident response operations enforce strict defense-in-depth guardrails:
 | **Minimal Environment Allowlist** | `sanitize_process_environment()` | Inherits only allowlisted system keys; purges `AWS_*`, `DATABASE_URL`, `TEST_DATABASE_URL`, `HOME`, `PYTHONPATH`. Rejects `LD_PRELOAD`, `PYTEST_ADDOPTS`, proxy overrides. |
 | **Policy Boundary vs Kernel Sandbox** | Application-level isolation | Directory `cwd` containment, unprivileged non-root execution (`oncall`), and env filtering are application policy controls, not a kernel-enforced OS sandbox. |
 | **Bounded Retention** | `prune_stale_resources()` | Retains at most 3 workspaces, 10 incident history records, and automatically prunes expired/consumed tokens. |
-| **Process Timeouts & Output Bounding** | Subprocess timeout & truncation | Bounded buffers (64KB max) to prevent memory exhaustion; process termination on timeout. |
+| **Process Timeout & Output Capture Limitations** | Subprocess timeout and post-run truncation | Only the returned output is truncated to 64KB **after** capture; stdout/stderr pipes themselves are not memory-bounded. Descendant termination and network isolation are not independently enforced. This is not a secure executor for untrusted generated code. |
 
 ---
 
@@ -146,7 +146,7 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
 ## 7. Reproducible Local Commands
 
 ### 7.1 Running Automated Unit & Security Tests
-Verify all 40 automated tests covering alert validation, atomic token auth, single-use consumption, incorrect-token preservation, workspace registry, positive manifest isolation, unsafe override rejection, and mock remediation:
+Verify all 54 responder tests at merged PR #9 baseline, covering alert validation, atomic token auth, single-use consumption, incorrect-token preservation, workspace registry, positive manifest isolation, unsafe override rejection, and mock remediation:
 
 ```bash
 uv run --project backend pytest incident-response/tests -v
@@ -170,7 +170,7 @@ The operator CLI provides an out-of-band path for authorized remediation.
   ```
 
 ### 7.3 Running the End-to-End Incident Drill
-The standalone drill exercises the complete lifecycle in a service-registered disposable workspace (with `TASKLANE_ALLOW_HTTP_REPAIR=true`):
+The standalone **mock-only** drill exercises deterministic fixture remediation in a disposable workspace (with `TASKLANE_ALLOW_HTTP_REPAIR=true`). It is strictly for trusted local demonstration, not an LLM-generated fix or a safely confined worker for arbitrary code:
 
 ```bash
 # Terminal 1: Start the on-call responder with local HTTP repair enabled

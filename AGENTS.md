@@ -6,13 +6,15 @@ Welcome to the TaskLane codebase. This document serves as the primary entry poin
 
 ## 1. Project Overview & Evolution
 
-TaskLane is a production-grade, containerized Mini Kanban Board application:
+TaskLane is an educational, containerized Mini Kanban Board application with a public demo deployment:
 - **Core Workflow:** Implements a deterministic, sequential 5-stage task lifecycle:
   `backlog` &rarr; `todo` &rarr; `in_progress` &rarr; `review` &rarr; `done`
 - **Full-Stack Architecture:** React 19 SPA frontend, FastAPI backend with Pydantic v2 schemas, and SQLAlchemy 2.0 ORM persistence.
 - **Production Infrastructure:** Deployed as a multi-stage Docker container on **Render Web Service** (`tasklane-app`) backed by a persistent serverless **Neon PostgreSQL 16** database (`tasklane` project, **`import`** branch, `neondb` database).
 - **Public Application:** [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - **Public Tracker:** [https://github.com/LE0ST/tasklane/issues](https://github.com/LE0ST/tasklane/issues)
+- **CI Baseline:** Four GitHub Actions jobs; 76 backend tests + 54 responder tests at merged PR #9, [CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271). Counts are evidence snapshots, not fixed promises.
+- **AI Remediation Limit:** Real Grafana-triggered **local read-only diagnosis** is validated. The independent mock repair is deterministic; a live LLM-authored fix is **not demonstrated** and write-capable Codex remains disabled.
 
 ---
 
@@ -25,8 +27,11 @@ All agents must consult the appropriate modular documentation before planning or
 | **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical functional requirements, data models, validation rules, and acceptance criteria (AC-1..AC-10). |
 | **Agent Team & Roles** | [`docs/teams.md`](docs/teams.md) | Agent roster (Luna, Flash, Sol, Astra, Argon, Maintainer), RACI matrix, and write boundaries. |
 | **Engineering Process** | [`docs/process.md`](docs/process.md) | The verified issue-driven development lifecycle, test verification, review gates, and no-fabrication policy. |
-| **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete topology, container layers, Neon PostgreSQL 16 integration, and planned telemetry architecture. |
+| **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete topology, container layers, Neon PostgreSQL 16 integration, and implemented local-only telemetry/alerting and the optional diagnosis-only on-call overlay. |
 | **Project Roadmap** | [`docs/project-roadmap.md`](docs/project-roadmap.md) | Milestones, scoring criteria mapping, and tracking of GitHub Issues #1–#5. |
+| **Evidence Traceability** | [`docs/evidence-traceability.md`](docs/evidence-traceability.md) | Issue, PR, commit and CI evidence with scope limitations. |
+| **Operations & Recovery** | [`docs/operations-runbook.md`](docs/operations-runbook.md) | Local reproduction, read-only cloud checks and safe rollback. |
+| **Submission Checklist** | [`docs/submission-checklist.md`](docs/submission-checklist.md) | Exact commit submission and three mandatory peer reviews. |
 | **OpenAPI Contract** | [`openapi.yaml`](openapi.yaml) | Formal OpenAPI 3.1 REST API specification. |
 
 ---
@@ -38,7 +43,7 @@ All agents must consult the appropriate modular documentation before planning or
 # Run backend locally with live reload (defaults to SQLite tasklane.db if DATABASE_URL unset):
 cd backend && uv run uvicorn main:app --reload --port 8000
 
-# Run all unit/API tests (14 tests):
+# Run non-integration backend tests (counts depend on current revision):
 cd backend && uv run pytest -v -m "not integration"
 
 # Run PostgreSQL integration tests (requires local PostgreSQL or TEST_DATABASE_URL):
