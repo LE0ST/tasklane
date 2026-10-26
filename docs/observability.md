@@ -166,12 +166,11 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ## 4. Automated Test Coverage & Verification Evidence
 
 ### 4.1 Test Counts
-- **33 Non-Integration Backend Tests** (14 API/CRUD tests + 19 Telemetry & Isolation tests).
-- **5 PostgreSQL Integration Tests** (`test_postgres_integration.py`).
-- **38 Total Backend Tests**.
+- **76 backend tests** passed at the merged-main baseline `9968999` in [GitHub Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032). This current total combines API, incident-alert validation, telemetry, and PostgreSQL integration tests; it supersedes the historical 38-test count from the initial Issue #2 implementation.
+- **46 additional on-call responder tests** run only in [Draft PR #9](https://github.com/LE0ST/tasklane/pull/9) as of [run 40265085450](https://github.com/LE0ST/tasklane/actions/runs/40265085450), not in the merged-main baseline.
 
 ### 4.2 Telemetry Test Breakdown (`backend/tests/test_telemetry.py`)
-19 automated tests verify:
+The telemetry and isolation tests verify:
 - **Default Disabled State:** `enable_telemetry` returns `False` when flag is omitted; HTTP requests execute normally with zero telemetry logging.
 - **Fail-Open Behavior:** Missing SDK packages (`ImportError`) and unreachable OTLP endpoints fail open without crashing or blocking HTTP traffic.
 - **Incompatible Configuration Fail-Open:** Tests incompatible batch processor settings (`OTEL_BSP_MAX_QUEUE_SIZE=1`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE=2`), asserting that `enable_telemetry` returns `False`, no middleware is installed, a sanitized warning is logged without leaking raw exception details or configuration values, and `/health` serves traffic normally.
@@ -193,6 +192,6 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down -v
 ### 4.3 CI Pipeline Integration
 - Run in GitHub Actions with 4 parallel/sequential verification jobs:
   1. `Frontend Build & Asset Verification`
-  2. `Backend Tests & PostgreSQL Integration` (38 tests)
+  2. `Backend Tests & PostgreSQL Integration` (76 tests at baseline `9968999`)
   3. `Docker Build, Smoke Tests & Playwright E2E`
   4. `OpenTelemetry Local Stack & Correlation` (`observability-smoke`)
