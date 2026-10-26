@@ -26,10 +26,10 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml down
 
 ## 2. CI/CD and public health verification
 
-- GitHub Actions CI runs on pull requests to `main` and commits pushed to `main`. Four jobs cover frontend bundle, backend/PostgreSQL migrations/tests, Docker/Playwright and local OpenTelemetry/Grafana real 503 alert lifecycle. Last completed previously verified merged-main [run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed four jobs; the new [postmerge run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) for main `7c73446` is pending final confirmation.
+- GitHub Actions CI runs on pull requests to `main` and commits pushed to `main`. Four jobs cover frontend bundle, backend/PostgreSQL migrations/tests, Docker/Playwright and local OpenTelemetry/Grafana real 503 alert lifecycle. The [merged-main Actions run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed 4/4 jobs for `7c73446`; Render subsequently reported that same deploy as `live`.
 - Render service `tasklane-app` is wired to GitHub `main` and configured with `autoDeployTrigger=checksPass`. **No distinct staging promotion gate is configured or claimed.** The Docker entrypoint serves app HTTP; health path is `/health`.
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com); API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs). Free-plan cold starts may delay health responses. **Do not insert synthetic incident headers or write probes into production**.
-- Last independently confirmed `live` deployment was `9968999`; postmerge Render deployment of `7c73446` is being verified. Deploy status alone does not substitute for a fresh read-only HTTP probe.
+- Latest independently confirmed `live` deployment is `7c73446`; no app rollback or production write probe was executed. Deploy status alone does not substitute for a fresh read-only HTTP probe.
 
 ## 3. Neon connection and persistence verification (read-only)
 

@@ -24,7 +24,7 @@
 - [x] Production-safe app rollback and database recovery **procedures** documented; no actual production rollback or backup restore is claimed.
 - [x] Receive external independent security and SRE approval for PR #9's limited diagnosis-only scope (Sol reviewed earlier security HEAD; Astra approved final identity-only HEAD).
 - [x] Obtain explicit maintainer approval and squash-merge PR #9 as `7c73446`.
-- [ ] Finish verifying merged-main CI and Render deployment; recheck Neon without modifying data.
+- [x] Verify merged-main [CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed 4/4 and Render deploy `dep-dbfe8kuk1f9s7386g05g` is `live` at `7c73446`; Neon read-only totals unchanged (2 tasks, 1 migration check; Alembic `1ea1353bfe87`).
 - [ ] Merge Issue #5 documentation PR only after review and explicit maintainer approval; capture its final merged SHA and passing CI.
 - [ ] Verify public demo and application behavior without adding or changing production tasks.
 - [ ] Record final `main` commit SHA and linked Actions deployment evidence in submission.

@@ -238,7 +238,7 @@ uv sync --frozen
 uv run pytest -v --strict-markers
 ```
 
-At merged `main` commit `9968999`, [Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed **76 backend tests** and all four CI jobs. PR #9 was subsequently squash-merged to `main` as `7c73446`; [postmerge Actions run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) is the next deployment gate and must be checked independently before claiming success. The backend job provisions PostgreSQL 16, creates a dedicated test database, applies Alembic migrations, and runs unit plus integration tests. The browser job tests the running Compose app with Playwright/Chromium (nine E2E scenarios). No production database is used in CI.
+At merged `main` commit `9968999`, [Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed **76 backend tests** and all four CI jobs. PR #9 was subsequently squash-merged to `main` as `7c73446`; [postmerge Actions run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) completed successfully with all four jobs passing. The backend job provisions PostgreSQL 16, creates a dedicated test database, applies Alembic migrations, and runs unit plus integration tests. The browser job tests the running Compose app with Playwright/Chromium (nine E2E scenarios). No production database is used in CI.
 
 Optional local telemetry and real Grafana 5xx firing/recovery are verified using:
 ```bash
@@ -320,7 +320,7 @@ See [the detailed traceability matrix](docs/evidence-traceability.md) for CI lin
 
 ## Operations, Rollback & Submission
 
-Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The last independently confirmed `live` Render deployment was `9968999`; the newer main commit `7c73446` has been merged and its deployment verification is pending.
+Production uses the Render Docker Web Service `tasklane-app` and Neon PostgreSQL 16 (`import` branch, `neondb`). Render currently follows `main` and deploys after CI checks pass. The latest independently confirmed Render `live` deployment is `7c73446` (deploy `dep-dbfe8kuk1f9s7386g05g`, completed October 26, 2026 at 05:26 UTC).
 
 **Application rollback is not database rollback.** First select a previously healthy compatible commit/deploy in the Render dashboard, check application health and compatibility with the current Alembic schema, then verify read-only database state. Never trigger `alembic downgrade` or restore production data as an automatic response to a bad app deploy. There is no independently verified backup snapshot claimed here.
 

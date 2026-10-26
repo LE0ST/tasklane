@@ -27,7 +27,7 @@ The [official course project rubric](https://github.com/DataTalksClub/ai-dev-too
 | Application | [public Render demo](https://tasklane-app.onrender.com), [backend](../backend/main.py), [frontend](../frontend/src/App.jsx) | UI-to-API-to-Neon persistence evidence from historical migration and current read-only DB verification |
 | Testing | [CI workflow](../.github/workflows/ci.yml), [Actions 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) | 76 backend + 54 responder tests in last PR #9 CI, with merged-main postmerge run pending |
 | Containerization | [Dockerfile](../Dockerfile), [one-command Compose](../docker-compose.yml) | Base stack includes local PostgreSQL 16; optional observability is a separate overlay |
-| Deployment | [Render public URL](https://tasklane-app.onrender.com), [operations runbook](operations-runbook.md) | Last independently observed live deploy at `9968999`; merged main now `7c73446`, awaiting CI/deploy validation; no production write probes |
+| Deployment | [Render public URL](https://tasklane-app.onrender.com), [operations runbook](operations-runbook.md) | Render is verified `live` at merged main `7c73446` after postmerge CI 40273628271 passed 4/4; no production write probes |
 | CI/CD | [Actions workflow](../.github/workflows/ci.yml), Render `main` autoDeployTrigger=`checksPass` | Automatic production deployment; **no separate staging environment or manual production promotion** is claimed |
 | Observability | [OTel guide](observability.md), [PR #7](https://github.com/LE0ST/tasklane/pull/7) | Local-only Prometheus/Loki/Tempo/Grafana, not production telemetry |
 | Alerting on User Impact | [PR #8](https://github.com/LE0ST/tasklane/pull/8), [incident drill](incident-drill.md) | Real task endpoint 503, metric/log/trace and Grafana firing→resolved; no production fault injection |
@@ -35,7 +35,7 @@ The [official course project rubric](https://github.com/DataTalksClub/ai-dev-too
 
 ## Verified production infrastructure — read-only
 
-- **Render:** Web Service `tasklane-app`, Docker runtime, branch `main`, auto-deploy on passing checks (`checksPass`). Last listed deploy: `996899924f04d3abe02ca5fd1d1578ad06e554c8` with `live` status and completed October 25, 2026 at 22:11 UTC. This is a deployment status observation, not a fresh public HTTP smoke in this documentation update.
+- **Render:** Web Service `tasklane-app`, Docker runtime, branch `main`, auto-deploy on passing checks (`checksPass`). Latest deployment: `7c7344690bf3260297301a14f434d00cb6eb123a`, `live` (deploy `dep-dbfe8kuk1f9s7386g05g`, completed October 26, 2026 at 05:26 UTC). This is a deployment status observation, not a fresh public HTTP smoke in this documentation update.
 - **Neon:** PostgreSQL 16, project `tasklane`, branch `import`, database `neondb`. A read-only SQL aggregate on October 25, 2026 returned `total=2`, `migration_check=1` for title `NEON-MIGRATION-CHECK-20261023`, and Alembic revision `1ea1353bfe87`.
 - **Former Render PostgreSQL:** Historical migration comparison was recorded earlier; the source database had an October 24 expiry and its present accessibility and current row count were **not** reverified. **Do not claim that it remains an available backup.**
 - Neither query changed Render application settings, Neon rows, production schema, or secrets. The actual production `DATABASE_URL` is never printed or committed.
