@@ -14,15 +14,21 @@ CRITICAL ARCHITECTURAL CONSTRAINTS & SECURITY GUARANTEES:
 4. Process separation: Candidate code executes in its own isolated process (e.g. uvicorn);
    the trusted verifier executes in a separate process that does NOT import candidate code.
    The candidate cannot forge success tokens, nonces, or stdout markers.
-5. Strict output budget: stdout/stderr is monitored in real-time with a hard cap (MAX_OUTPUT_BYTES).
+5. Independent persistence verification: SQLite database file (/tmp/tasklane.db) is queried directly
+   to confirm physical persistence, rather than trusting candidate application HTTP responses.
+6. Untrusted exit detection: Pytest verification requires a genuine test completion summary and non-zero
+   passed tests. Early exits (e.g. os._exit(0)) or empty outputs with return code 0 are rejected as untrusted.
+7. Strict output budget: stdout/stderr is monitored in real-time with a hard cap (MAX_OUTPUT_BYTES).
    If exceeded, the container is stopped immediately.
-6. Centralized bounded cleanup: Staging directories and containers are tracked and guaranteed to be
-   destroyed on success, failure, timeout, or cancellation, with bounded cleanup timeouts.
-7. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
+8. Centralized bounded cleanup with retries: Staging directories and containers are tracked and guaranteed
+   to be destroyed on success, failure, timeout, or cancellation, with bounded cleanup timeouts and retries.
+   Emergency exit handler takes snapshot under lock to eliminate deadlocks.
+9. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
 """
 import atexit
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -40,19 +46,23 @@ WORKER_IMAGE_NAME = "tasklane-isolated-worker:local"
 WORKER_TIMEOUT_SECONDS = 45
 CLEANUP_TIMEOUT_SECONDS = 5
 
-# Global registry of active sessions for emergency process exit cleanup
-_ACTIVE_SESSIONS: Set["IsolatedWorkerSession"] = set()
+# Global registry of active sessions keyed by resolved staging path
+_ACTIVE_SESSIONS: Dict[Path, "IsolatedWorkerSession"] = {}
 _ACTIVE_SESSIONS_LOCK = threading.Lock()
 
 
 def _emergency_cleanup_on_exit():
-    """Ensure any orphaned containers and staging directories are pruned at process termination."""
+    """Ensure any orphaned containers and staging directories are pruned at process termination.
+    Takes a snapshot of active sessions under lock and releases the lock before cleanup to prevent deadlocks.
+    """
     with _ACTIVE_SESSIONS_LOCK:
-        for session in list(_ACTIVE_SESSIONS):
-            try:
-                session.cleanup()
-            except Exception:
-                pass
+        sessions_snapshot = list(_ACTIVE_SESSIONS.values())
+
+    for session in sessions_snapshot:
+        try:
+            session.cleanup()
+        except Exception:
+            pass
 
 
 atexit.register(_emergency_cleanup_on_exit)
@@ -71,16 +81,26 @@ class OutputBudgetExceededError(Exception):
 class IsolatedWorkerSession:
     """Manages the full lifecycle of an isolated staging directory and associated worker containers.
     Centralizes creation, container tracking, and bounded cleanup across success, error, timeout, and cancellation.
+    Eliminates duplicate sessions by reusing existing instances for the same staging directory.
     """
 
+    def __new__(cls, staging_dir: Path):
+        resolved = staging_dir.resolve()
+        with _ACTIVE_SESSIONS_LOCK:
+            if resolved in _ACTIVE_SESSIONS:
+                return _ACTIVE_SESSIONS[resolved]
+            instance = super().__new__(cls)
+            _ACTIVE_SESSIONS[resolved] = instance
+            return instance
+
     def __init__(self, staging_dir: Path):
+        if getattr(self, "_initialized", False):
+            return
+        self._initialized = True
         self.staging_dir = staging_dir
         self.active_containers: Set[str] = set()
         self._lock = threading.Lock()
         self._cleaned = False
-
-        with _ACTIVE_SESSIONS_LOCK:
-            _ACTIVE_SESSIONS.add(self)
 
     @classmethod
     def create(
@@ -197,33 +217,62 @@ class IsolatedWorkerSession:
         with self._lock:
             self.active_containers.add(container_name)
 
-    def unregister_container(self, container_name: str) -> None:
-        """Unregister a finished container."""
-        with self._lock:
-            self.active_containers.discard(container_name)
-
-    def cleanup(self) -> None:
-        """Centralized bounded cleanup for all associated containers and staging files.
-        Executes with bounded timeouts to prevent hanging.
+    def confirm_container_removed(self, container_name: str, max_retries: int = 3) -> bool:
+        """Attempt to stop and remove the container with retries.
+        Only unregisters the container once its removal is verified.
         """
-        with self._lock:
-            if self._cleaned:
-                return
-            self._cleaned = True
+        removed = self._remove_docker_container(container_name, max_retries=max_retries)
+        if removed:
+            with self._lock:
+                self.active_containers.discard(container_name)
+        return removed
 
-        # 1. Stop and remove all registered active containers with bounded timeout
-        for container_name in list(self.active_containers):
+    @classmethod
+    def _remove_docker_container(cls, container_name: str, max_retries: int = 3) -> bool:
+        """Execute docker rm -f with bounded timeouts and retries on failure or timeout."""
+        for attempt in range(max_retries):
             try:
-                subprocess.run(
+                res = subprocess.run(
                     ["docker", "rm", "-f", container_name],
                     capture_output=True,
                     timeout=CLEANUP_TIMEOUT_SECONDS,
                     check=False,
                 )
-            except Exception:
+                if res.returncode == 0:
+                    return True
+                stderr_text = res.stderr.decode("utf-8", errors="replace") if isinstance(res.stderr, bytes) else str(res.stderr)
+                if "No such container" in stderr_text or "not found" in stderr_text.lower():
+                    return True
+            except (subprocess.TimeoutExpired, OSError):
                 pass
-            finally:
-                self.active_containers.discard(container_name)
+            if attempt < max_retries - 1:
+                time.sleep(0.3)
+
+        # Final inspect check: verify container no longer exists
+        try:
+            inspect_res = subprocess.run(
+                ["docker", "container", "inspect", container_name],
+                capture_output=True,
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+            return inspect_res.returncode != 0
+        except Exception:
+            return False
+
+    def cleanup(self) -> None:
+        """Centralized bounded cleanup for all associated containers and staging files.
+        Executes with bounded timeouts and retries to prevent hanging.
+        """
+        with self._lock:
+            if self._cleaned:
+                return
+            self._cleaned = True
+            containers_to_clean = list(self.active_containers)
+
+        # 1. Stop and remove all registered active containers with retries
+        for container_name in containers_to_clean:
+            self.confirm_container_removed(container_name, max_retries=3)
 
         # 2. Remove staging directory
         if self.staging_dir and self.staging_dir.exists():
@@ -233,7 +282,7 @@ class IsolatedWorkerSession:
                 pass
 
         with _ACTIVE_SESSIONS_LOCK:
-            _ACTIVE_SESSIONS.discard(self)
+            _ACTIVE_SESSIONS.pop(self.staging_dir.resolve(), None)
 
     def __enter__(self) -> "IsolatedWorkerSession":
         return self
@@ -252,7 +301,7 @@ import time
 env = os.environ.copy()
 env["DATABASE_URL"] = "sqlite:////tmp/tasklane.db"
 
-# 1. Start candidate code in a separate process via uvicorn
+# 1. Start candidate code in a separate process via uvicorn with redirected streams
 app_proc = subprocess.Popen(
     [
         sys.executable, "-m", "uvicorn", "main:app",
@@ -286,13 +335,18 @@ finally:
 
     @staticmethod
     def _get_verifier_script_content() -> str:
-        """Trusted functional verifier: uses httpx over TCP loopback; does NOT import main.py."""
+        """Trusted functional verifier: uses httpx over TCP loopback and sqlite3 directly.
+        Does NOT import candidate code (main.py).
+        Verifies persistence directly from SQLite database /tmp/tasklane.db, independent of candidate's GET response.
+        """
         return """import json
+import sqlite3
 import sys
 import time
 import httpx
 
 base_url = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8765"
+db_path = "/tmp/tasklane.db"
 
 # Wait for server readiness on loopback (up to 50 retries of 0.2s = 10s)
 ready = False
@@ -310,11 +364,12 @@ if not ready:
         "error": "server_not_ready",
         "normal_status": 0,
         "urgent_status": 0,
-        "urgent_persisted": False
+        "urgent_persisted": False,
+        "db_verified": False,
     }))
     sys.exit(1)
 
-# Normal task creation check
+# 1. Normal task creation check
 normal_status = 0
 try:
     r_norm = httpx.post(
@@ -326,7 +381,7 @@ try:
 except Exception:
     normal_status = 0
 
-# Urgent task creation check
+# 2. Urgent task creation check
 urgent_status = 0
 urgent_id = None
 try:
@@ -341,23 +396,42 @@ try:
 except Exception:
     urgent_status = 0
 
-# Urgent persistence check
-urgent_persisted = False
+# 3. Independent persistence verification directly in SQLite database
+db_verified = False
+db_priority = None
+if urgent_status == 201 and urgent_id is not None:
+    try:
+        conn = sqlite3.connect(db_path, timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT priority FROM tasks WHERE id = ?", (urgent_id,))
+        row = cur.fetchone()
+        if row:
+            db_priority = row[0]
+            db_verified = (db_priority == "urgent")
+        conn.close()
+    except Exception:
+        db_verified = False
+
+# 4. Secondary API GET check
+api_get_verified = False
 if urgent_status == 201 and urgent_id:
     try:
         r_get = httpx.get(f"{base_url}/api/tasks/{urgent_id}", timeout=3)
-        urgent_persisted = (r_get.status_code == 200 and r_get.json().get("priority") == "urgent")
+        api_get_verified = (r_get.status_code == 200 and r_get.json().get("priority") == "urgent")
     except Exception:
-        urgent_persisted = False
+        api_get_verified = False
 
 result = {
     "normal_status": normal_status,
     "urgent_status": urgent_status,
-    "urgent_persisted": urgent_persisted,
+    "db_verified": db_verified,
+    "db_priority": db_priority,
+    "api_get_verified": api_get_verified,
+    "urgent_persisted": db_verified,
 }
 print("TRUSTED_VERIFIER_JSON:" + json.dumps(result))
 
-if normal_status == 201 and urgent_status == 201 and urgent_persisted:
+if normal_status == 201 and urgent_status == 201 and db_verified:
     sys.exit(0)
 else:
     sys.exit(1)
@@ -470,53 +544,57 @@ class IsolatedWorkerController:
         max_bytes: int = MAX_OUTPUT_BYTES,
     ) -> Tuple[int, str]:
         """Execute a container command with streaming output budget enforcement and bounded timeout.
-        If the output exceeds max_bytes, the container is stopped immediately.
+        Guarantees container removal with retries and client termination on exceptions or cancellation.
         """
         session.register_container(container_name)
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        total_bytes = [0]
-        chunks: List[bytes] = []
-        budget_exceeded = threading.Event()
-
-        def stream_reader(pipe):
-            try:
-                while True:
-                    buf = pipe.read(4096)
-                    if not buf:
-                        break
-                    total_bytes[0] += len(buf)
-                    if total_bytes[0] > max_bytes:
-                        budget_exceeded.set()
-                        # Immediately stop container and kill process
-                        subprocess.run(
-                            ["docker", "rm", "-f", container_name],
-                            capture_output=True,
-                            timeout=CLEANUP_TIMEOUT_SECONDS,
-                            check=False,
-                        )
-                        try:
-                            proc.kill()
-                        except Exception:
-                            pass
-                        break
-                    chunks.append(buf)
-            except Exception:
-                pass
-            finally:
-                pipe.close()
-
-        t_out = threading.Thread(target=stream_reader, args=(proc.stdout,), daemon=True)
-        t_err = threading.Thread(target=stream_reader, args=(proc.stderr,), daemon=True)
-        t_out.start()
-        t_err.start()
+        proc = None
+        t_out = None
+        t_err = None
 
         try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            total_bytes = [0]
+            chunks: List[bytes] = []
+            budget_exceeded = threading.Event()
+
+            def stream_reader(pipe):
+                if not pipe:
+                    return
+                try:
+                    while True:
+                        buf = pipe.read(4096)
+                        if not buf:
+                            break
+                        total_bytes[0] += len(buf)
+                        if total_bytes[0] > max_bytes:
+                            budget_exceeded.set()
+                            # Immediately stop container and kill process
+                            session.confirm_container_removed(container_name, max_retries=2)
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                            break
+                        chunks.append(buf)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
+
+            t_out = threading.Thread(target=stream_reader, args=(proc.stdout,), daemon=True)
+            t_err = threading.Thread(target=stream_reader, args=(proc.stderr,), daemon=True)
+            t_out.start()
+            t_err.start()
+
             retcode = proc.wait(timeout=timeout)
             t_out.join(timeout=1)
             t_err.join(timeout=1)
@@ -528,20 +606,30 @@ class IsolatedWorkerController:
             return retcode, combined_output[:max_bytes]
 
         except subprocess.TimeoutExpired:
-            # Stop container immediately on timeout
-            subprocess.run(
-                ["docker", "rm", "-f", container_name],
-                capture_output=True,
-                timeout=CLEANUP_TIMEOUT_SECONDS,
-                check=False,
-            )
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            # Stop container immediately on timeout with retries
+            session.confirm_container_removed(container_name, max_retries=3)
+            if proc:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
             return 124, f"ERROR: Execution timed out after {timeout}s; container stopped."
+
+        except (KeyboardInterrupt, BaseException):
+            # Clean up client process and container on cancellation or arbitrary exception
+            session.confirm_container_removed(container_name, max_retries=3)
+            if proc:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+            raise
+
         finally:
-            session.unregister_container(container_name)
+            # Confirm container removal before concluding
+            session.confirm_container_removed(container_name, max_retries=3)
 
     @classmethod
     def run_isolated_pytest(
@@ -550,6 +638,8 @@ class IsolatedWorkerController:
         timeout: int = WORKER_TIMEOUT_SECONDS,
     ) -> Tuple[bool, str]:
         """Step 1: Execute pytest against backend unit tests in the isolated container.
+        Validates both return code and presence of trusted pytest execution summary.
+        Detects premature exit or empty output even if returncode is 0.
         Returns (pytest_passed, bounded_output).
         """
         image_id = cls.get_immutable_image_id()
@@ -586,8 +676,32 @@ class IsolatedWorkerController:
         ]
 
         retcode, output = cls._execute_bounded_container(cmd, container_name, session, timeout)
-        pytest_passed = (retcode == 0)
-        return pytest_passed, output
+
+        # 1. Output cannot be empty
+        if not output or not output.strip():
+            return False, "ERROR: pytest produced empty output (premature termination suspected)"
+
+        # 2. Returncode must be 0
+        if retcode != 0:
+            return False, output
+
+        # 3. Detect premature exit / missing summary:
+        summary_match = re.search(r"=+\s+([0-9]+)\s+passed.*=+", output)
+        if not summary_match:
+            return False, f"ERROR: pytest exited with code 0 but missing completion summary (untrusted):\n{output}"
+
+        passed_count = int(summary_match.group(1))
+        if passed_count <= 0:
+            return False, f"ERROR: pytest reported 0 passed tests:\n{output}"
+
+        # If any failed or error counts exist in summary:
+        if re.search(r"failed|error", output, re.IGNORECASE) and not re.search(r"0 failed", output):
+            last_lines = output.strip().splitlines()[-3:]
+            for line in last_lines:
+                if "=" in line and ("failed" in line or "error" in line):
+                    return False, output
+
+        return True, output
 
     @classmethod
     def run_isolated_functional_verification(
@@ -596,8 +710,9 @@ class IsolatedWorkerController:
         timeout: int = WORKER_TIMEOUT_SECONDS,
     ) -> Tuple[bool, Dict[str, Any], str]:
         """Step 2: Execute separate functional verification: candidate runs under uvicorn;
-        the trusted verifier executes in an independent process querying over TCP loopback.
-        Candidate cannot forge success tokens or nonces.
+        the trusted verifier executes in an independent process querying over TCP loopback
+        and verifying persistence directly in SQLite /tmp/tasklane.db.
+        Candidate cannot forge success tokens, nonces, or pretend persistence.
         """
         image_id = cls.get_immutable_image_id()
         if not image_id:
@@ -644,6 +759,7 @@ class IsolatedWorkerController:
             and parsed_data.get("normal_status") == 201
             and parsed_data.get("urgent_status") == 201
             and parsed_data.get("urgent_persisted") is True
+            and parsed_data.get("db_verified") is True
         )
         return functional_passed, parsed_data, output
 
@@ -662,7 +778,10 @@ class IsolatedWorkerController:
             func_passed, func_data, func_out = cls.run_isolated_functional_verification(session, timeout=timeout)
 
             combined_success = bool(pytest_passed and func_passed)
-            combined_output = f"Pytest (passed={pytest_passed}):\n{pytest_out}\n\nFunctional (passed={func_passed}):\n{func_out}"
+            combined_output = (
+                f"--- Pytest (passed={pytest_passed}) ---\n{pytest_out}\n\n"
+                f"--- Functional (passed={func_passed}) ---\n{func_out}"
+            )
             return combined_success, func_data, combined_output
         finally:
             session.cleanup()

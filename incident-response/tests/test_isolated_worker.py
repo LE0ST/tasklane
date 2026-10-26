@@ -2,6 +2,7 @@
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 import pytest
 
@@ -375,3 +376,185 @@ def test_deepseek_adapter_repair_preserves_target_file_when_worker_fails(monkeyp
         assert "WORKER_SIMULATED_TEST_FAILURE" not in current_file_content
     finally:
         cleanup_disposable_workspace(ws, incident_id="test-isolated-repair-failure")
+
+
+def test_pytest_empty_output_or_premature_exit_rejected_as_untrusted(monkeypatch, tmp_path):
+    """Regression test (Audit Sol Item 1): Verify that pytest returning exit code 0
+    with empty output or missing completion summary (e.g. premature os._exit(0))
+    is detected and rejected as untrusted (pytest_passed is False).
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    with IsolatedWorkerSession.create(repo_root, staging_parent=tmp_path) as session:
+        # Case 1: Empty output with exit code 0
+        monkeypatch.setattr(
+            IsolatedWorkerController,
+            "_execute_bounded_container",
+            classmethod(lambda cls, cmd, cname, sess, timeout, **kwargs: (0, "")),
+        )
+        passed, out = IsolatedWorkerController.run_isolated_pytest(session)
+        assert passed is False
+        assert "empty output" in out or "premature" in out
+
+        # Case 2: Output lacking pytest completion summary
+        monkeypatch.setattr(
+            IsolatedWorkerController,
+            "_execute_bounded_container",
+            classmethod(lambda cls, cmd, cname, sess, timeout, **kwargs: (0, "Candidate called os._exit(0)\n")),
+        )
+        passed, out = IsolatedWorkerController.run_isolated_pytest(session)
+        assert passed is False
+        assert "missing completion summary" in out or "untrusted" in out
+
+
+def test_functional_verifier_requires_direct_sqlite_persistence(tmp_path):
+    """Regression test (Audit Sol Item 2): Verify that functional verification
+    independently confirms persistence via direct SQLite inspection of /tmp/tasklane.db,
+    rather than trusting the candidate application's GET response.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    with IsolatedWorkerSession.create(repo_root, staging_parent=tmp_path) as session:
+        ok, data, out = IsolatedWorkerController.run_isolated_functional_verification(session)
+        assert ok is True
+        assert data.get("db_verified") is True
+        assert data.get("urgent_persisted") is True
+        assert data.get("db_priority") == "urgent"
+
+
+def test_container_removal_retries_and_handles_failures(monkeypatch):
+    """Regression test (Audit Sol Item 3): Verify that container removal executes
+    with retries and only unregisters the container once removal is confirmed.
+    """
+    import subprocess
+    session = IsolatedWorkerSession(Path(tempfile.gettempdir()) / "test_retry_stage")
+    container_name = "test-retry-container"
+    session.register_container(container_name)
+    assert container_name in session.active_containers
+
+    call_count = [0]
+
+    def mock_run(cmd, **kwargs):
+        call_count[0] += 1
+        if "rm" in cmd and call_count[0] < 2:
+            # Simulate first attempt failure
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"daemon busy")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    removed = session.confirm_container_removed(container_name, max_retries=3)
+    assert removed is True
+    assert container_name not in session.active_containers
+    assert call_count[0] >= 2
+
+
+def test_execute_bounded_container_handles_keyboard_interrupt(monkeypatch, tmp_path):
+    """Regression test (Audit Sol Item 3): Verify that KeyboardInterrupt during
+    container execution guarantees client process cleanup and container removal.
+    """
+    import subprocess
+    repo_root = Path(__file__).resolve().parents[2]
+    with IsolatedWorkerSession.create(repo_root, staging_parent=tmp_path) as session:
+        container_name = "test-sigint-container"
+        cleanup_called = [False]
+
+        def mock_confirm(cname, max_retries=3):
+            cleanup_called[0] = True
+            return True
+
+        monkeypatch.setattr(session, "confirm_container_removed", mock_confirm)
+
+        class MockProc:
+            stdout = None
+            stderr = None
+            def wait(self, timeout=None):
+                raise KeyboardInterrupt("Simulated Ctrl-C")
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: MockProc())
+
+        with pytest.raises(KeyboardInterrupt):
+            IsolatedWorkerController._execute_bounded_container(
+                ["docker", "run"], container_name, session, timeout=5
+            )
+
+        assert cleanup_called[0] is True
+
+
+def test_execute_bounded_container_handles_runtime_error(monkeypatch, tmp_path):
+    """Regression test (Audit Sol Item 3): Verify that arbitrary RuntimeError during
+    container execution triggers container removal with retries and client termination.
+    """
+    import subprocess
+    repo_root = Path(__file__).resolve().parents[2]
+    with IsolatedWorkerSession.create(repo_root, staging_parent=tmp_path) as session:
+        container_name = "test-runtime-error-container"
+        cleanup_called = [False]
+
+        def mock_confirm(cname, max_retries=3):
+            cleanup_called[0] = True
+            return True
+
+        monkeypatch.setattr(session, "confirm_container_removed", mock_confirm)
+
+        class MockProc:
+            stdout = None
+            stderr = None
+            def wait(self, timeout=None):
+                raise RuntimeError("Simulated internal worker crash")
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: MockProc())
+
+        with pytest.raises(RuntimeError, match="Simulated internal worker crash"):
+            IsolatedWorkerController._execute_bounded_container(
+                ["docker", "run"], container_name, session, timeout=5
+            )
+
+        assert cleanup_called[0] is True
+
+
+def test_emergency_cleanup_on_exit_deadlock_free_in_child_process():
+    """Regression test (Audit Sol Item 4): Launch a child Python process that imports
+    isolated_worker, registers sessions, and runs _emergency_cleanup_on_exit()
+    with a strict timeout to verify termination without deadlocks.
+    """
+    import subprocess
+    child_script = (
+        "import sys, os, pathlib\n"
+        "sys.path.insert(0, 'incident-response')\n"
+        "from isolated_worker import IsolatedWorkerSession, _emergency_cleanup_on_exit\n"
+        "s1 = IsolatedWorkerSession(pathlib.Path('.').resolve() / 'test_deadlock_dir_1')\n"
+        "s2 = IsolatedWorkerSession(pathlib.Path('.').resolve() / 'test_deadlock_dir_2')\n"
+        "_emergency_cleanup_on_exit()\n"
+        "sys.exit(0)\n"
+    )
+    repo_root = Path(__file__).resolve().parents[2]
+    proc = subprocess.run(
+        [sys.executable, "-c", child_script],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert proc.returncode == 0, f"Child process failed or hung: {proc.stderr}"
+
+
+def test_duplicate_sessions_prevented(tmp_path):
+    """Regression test (Audit Sol Item 4): Verify that creating multiple sessions
+    for the same staging directory reuses the registered instance, preventing duplicates.
+    """
+    from isolated_worker import _ACTIVE_SESSIONS
+    staging_dir = tmp_path / "unique_stage_dir"
+    staging_dir.mkdir()
+
+    s1 = IsolatedWorkerSession(staging_dir)
+    s2 = IsolatedWorkerSession(staging_dir)
+
+    assert s1 is s2
+    assert _ACTIVE_SESSIONS.get(staging_dir.resolve()) is s1
+    s1.cleanup()
+    assert staging_dir.resolve() not in _ACTIVE_SESSIONS
+
