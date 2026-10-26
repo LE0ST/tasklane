@@ -609,8 +609,11 @@ def atomic_write_file(target_file: Path, content: str, encoding: str = "utf-8") 
 def is_isolated_worker_available() -> bool:
     """Check if an independently isolated test worker (with disabled network and filesystem boundary) is active.
 
-    In the project environment, host-level subprocess execution cannot block direct TCP socket egress.
-    Therefore, host execution of untrusted code is blocked by default pending verified container worker deployment.
+    CRITICAL SAFETY REQUIREMENT:
+    An environment variable cannot declare on its own that an isolated worker exists.
+    Until a real worker with effective network isolation and filesystem boundaries is
+    implemented, deployed, and verified, this function always returns False to fail closed.
+    Execution of untrusted model-generated code on the host is strictly blocked.
     """
-    return os.environ.get("TASKLANE_ISOLATED_WORKER_ENABLED", "false").lower() == "true"
+    return False
 

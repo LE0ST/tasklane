@@ -872,8 +872,6 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                 "tests_passed": False,
             }
 
-        safe_ws = validate_safe_workspace_path(workspace_path, enforce_registry=False)
-
         # Worker isolation check: untrusted code must never be executed on host
         if not is_isolated_worker_available():
             return {
@@ -886,6 +884,8 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                 ),
                 "tests_passed": False,
             }
+
+        safe_ws = validate_safe_workspace_path(workspace_path, enforce_registry=False)
 
         raw_target = get_target_file(safe_ws)
         try:

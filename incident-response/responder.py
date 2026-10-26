@@ -207,6 +207,8 @@ class ResponderHandler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -280,6 +282,12 @@ class ResponderHandler(BaseHTTPRequestHandler):
         if content_length < 2:
             return self.send_json(400, {"error": "empty_payload"})
         if content_length > MAX_PAYLOAD_BYTES:
+            self.close_connection = True
+            try:
+                to_drain = min(content_length, MAX_PAYLOAD_BYTES * 2)
+                self.rfile.read(to_drain)
+            except Exception:
+                pass
             return self.send_json(413, {"error": "payload_too_large"})
 
         # 2. Parse JSON
@@ -546,6 +554,14 @@ class ResponderHandler(BaseHTTPRequestHandler):
         # 2. Parse payload
         try:
             content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > MAX_PAYLOAD_BYTES:
+                self.close_connection = True
+                try:
+                    to_drain = min(content_length, MAX_PAYLOAD_BYTES * 2)
+                    self.rfile.read(to_drain)
+                except Exception:
+                    pass
+                return self.send_json(413, {"error": "payload_too_large"})
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
             if not isinstance(payload, dict):
                 return self.send_json(400, {"error": "malformed_json"})
