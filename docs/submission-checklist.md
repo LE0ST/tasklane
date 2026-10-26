@@ -7,8 +7,8 @@
 - Repository: [https://github.com/LE0ST/tasklane](https://github.com/LE0ST/tasklane)
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
-- **Recorded verified baseline:** `946b582510219532d0d1e44ba8510f5ca50997e9` (squash PR #11), after documentation PR #10 (`300f4e1`). [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535) passed 4/4 and the matching Render deployment was live.
-- **Verified submission candidate:** `946b582510219532d0d1e44ba8510f5ca50997e9`. Saving it on the course platform remains unverified. If selecting a later revision, use its exact merged SHA after its own CI/deploy checks.
+- **Earlier verified baseline:** `946b582510219532d0d1e44ba8510f5ca50997e9` (squash PR #11), after documentation PR #10 (`300f4e1`); [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535) passed 4/4, and its matching Render deployment was live.
+- **Current verified submission candidate:** `dd9a52696a961f58d2c5064a926b2c8082a333cf` (`main` on October 26, 2026). [CI 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699) passed 4/4 and Astra verified Render `live` at the same SHA. The new SHA did not receive a separate public `/health` probe. Saving the candidate on the course platform remains unverified. If selecting a later revision, use its exact merged SHA after its own CI/deploy checks.
 - Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; **no real AI-generated repair**.
 - Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
 
@@ -27,7 +27,7 @@
 - [x] Verify merged-main [CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed 4/4 and Render deploy `dep-dbfe8kuk1f9s7386g05g` is `live` at `7c73446`; Neon read-only totals unchanged (2 tasks, 1 migration check; Alembic `1ea1353bfe87`).
 - [x] Merge Issue #5 documentation PRs #10 and #11 with maintainer authorization; baseline `946b582` passed [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535), 4/4.
 - [x] Verify public `/health` returned healthy at baseline `946b582`, without production task writes; see [verification recorded in Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915). This is a health check, not a new full UI workflow test.
-- [ ] Record final `main` commit SHA and linked Actions deployment evidence in submission.
+- [x] Record verified candidate SHA `dd9a52696a961f58d2c5064a926b2c8082a333cf` and linked CI/Render evidence above; actual course submission is still pending.
 - [x] Verify Project 1 deadline against the **authenticated maintainer account**: **October 26, 2026 at 18:00 in the account's configured timezone**. The logged-out public preview instead displayed 23:00 in a different viewer timezone. Follow the authenticated time, not the public preview. [Course page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
 - [ ] Complete course-platform submission while logged in, and save proof of submission.
 - [ ] **Complete three required peer reviews** of other participants on the course platform and retain evidence of each. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit.
@@ -39,7 +39,7 @@ Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools
 | Form field | What to enter |
 |---|---|
 | GitHub link to the project | `https://github.com/LE0ST/tasklane` |
-| Commit ID | **Exact verified merged commit SHA**; candidate `946b582510219532d0d1e44ba8510f5ca50997e9`, or a later merged revision after its own verification; never a premerge feature-branch HEAD |
+| Commit ID | **Exact verified merged commit SHA**; candidate `dd9a52696a961f58d2c5064a926b2c8082a333cf`, or a later merged revision after its own verification; never a premerge feature-branch HEAD |
 | Learning in public links (optional) | Up to 14 relevant public progress posts; only if already published |
 | Time spent on project (hours) | The maintainer's actual hours; **do not invent** a number |
 | FAQ contribution PR or issue URL (optional) | Only an actual qualifying contribution |
