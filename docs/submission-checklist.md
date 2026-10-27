@@ -8,8 +8,9 @@
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
 - **Earlier verified baseline:** `946b582510219532d0d1e44ba8510f5ca50997e9` (squash PR #11), after documentation PR #10 (`300f4e1`); [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535) passed 4/4, and its matching Render deployment was live.
-- **Current verified submission candidate:** `96d3ebce69ed76345635fa5a90c82773229e0d9e` (merged `main`, October 26, 2026). [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) passed 4/4 and Render deploy `dep-dbfn7b4s728c73dq7f90` was verified `live`. The docs-only SHA did not receive a separate public `/health` probe. Saving the candidate on the course platform remains unverified. If selecting a later revision, use its exact merged SHA after its own CI/deploy checks.
-- Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; **no real AI-generated repair**.
+- **Historical verified submission candidate:** `96d3ebce69ed76345635fa5a90c82773229e0d9e` (merged `main`, October 26, 2026). [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) passed 4/4 and Render deploy `dep-dbfn7b4s728c73dq7f90` was verified `live`. The docs-only SHA did not receive a separate public `/health` probe. The SHA currently saved on the course platform has not been independently checked. If selecting a later revision, verify its exact merged SHA and its own CI/deploy checks.
+- **Maintainer confirmation:** The submission has been saved and the platform allows it to be updated. These are maintainer confirmations, not independent platform verification; the currently saved SHA is unknown.
+- Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; the merged baseline demonstrated no real AI-generated repair.
 - Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
 
 ## Final gate checklist — update only when evidence exists
@@ -27,19 +28,20 @@
 - [x] Verify merged-main [CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed 4/4 and Render deploy `dep-dbfe8kuk1f9s7386g05g` is `live` at `7c73446`; Neon read-only totals unchanged (2 tasks, 1 migration check; Alembic `1ea1353bfe87`).
 - [x] Merge Issue #5 documentation PRs #10 and #11 with maintainer authorization; baseline `946b582` passed [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535), 4/4.
 - [x] Verify public `/health` returned healthy at baseline `946b582`, without production task writes; see [verification recorded in Issue #5](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915). This is a health check, not a new full UI workflow test.
-- [x] Record verified candidate SHA `dd9a52696a961f58d2c5064a926b2c8082a333cf` and linked CI/Render evidence above; actual course submission is still pending.
-- [x] Verify Project 1 deadline against the **authenticated maintainer account**: **October 26, 2026 at 18:00 in the account's configured timezone**. The logged-out public preview instead displayed 23:00 in a different viewer timezone. Follow the authenticated time, not the public preview. [Course page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
-- [ ] Complete course-platform submission while logged in, and save proof of submission.
+- [x] Record historical candidate `dd9a52696a961f58d2c5064a926b2c8082a333cf` ([CI 40289231699](https://github.com/LE0ST/tasklane/actions/runs/40289231699)); the later historical candidate `96d3ebce69ed76345635fa5a90c82773229e0d9e` and its CI/Render evidence are listed above. Neither establishes the SHA currently saved in the submission.
+- [x] Verify Project 1 deadline against the **authenticated maintainer account**: **October 26, 2026 at 18:00 in the account's configured timezone**. The logged-out public preview instead displayed 23:00 in a different viewer timezone. This is a historical observation; check current platform instructions before any update. [Course page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
+- [x] Submission saved, as confirmed by the maintainer; independent platform verification and the saved SHA remain unverified.
+- [ ] Verify the exact currently saved SHA and retain submission evidence; update only if appropriate and permitted.
 - [ ] **Complete three required peer reviews** of other participants on the course platform and retain evidence of each. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit.
 
-## Actual Project 1 submission form (confirmed October 26, 2026)
+## Project 1 submission form — historical observation (October 26, 2026)
 
-Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools-2026/project/project1), log in, and **save the submission before October 26, 2026 at 18:00 in the maintainer account's displayed timezone**. The authenticated page explicitly permits saving a project and updating its commit SHA before the deadline. Submitting now with a verified green `main` commit avoids losing the whole entry if optional cleanup PRs take longer. The form asks for:
+The authenticated page displayed October 26, 2026 at 18:00 in the maintainer account's configured timezone as the deadline; this is a historical observation. The maintainer now confirms the submission is saved and the platform allows updates; neither claim was independently verified here. Check the current [course platform](https://courses.datatalks.club/ai-dev-tools-2026/project/project1) instructions and the saved SHA before any update. The historical form asked for:
 
 | Form field | What to enter |
 |---|---|
 | GitHub link to the project | `https://github.com/LE0ST/tasklane` |
-| Commit ID | **Exact verified merged commit SHA**; candidate `96d3ebce69ed76345635fa5a90c82773229e0d9e`, or a later merged revision after its own verification; never a premerge feature-branch HEAD |
+| Commit ID | **Exact verified merged commit SHA**; `96d3ebce69ed76345635fa5a90c82773229e0d9e` is a historical candidate, not a verified current form value. Verify any later revision separately; never assume a feature-branch HEAD was submitted. |
 | Learning in public links (optional) | Up to 14 relevant public progress posts; only if already published |
 | Time spent on project (hours) | The maintainer's actual hours; **do not invent** a number |
 | FAQ contribution PR or issue URL (optional) | Only an actual qualifying contribution |
