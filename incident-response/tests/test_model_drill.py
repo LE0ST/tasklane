@@ -51,7 +51,7 @@ from fixtures import (
 )
 
 
-def test_controlled_model_drill_end_to_end_offline():
+def test_controlled_model_drill_end_to_end_offline(monkeypatch):
     """Verify the full 5-stage controlled model drill lifecycle:
     1. Alert receipt & read-only diagnosis.
     2. Defect injection & BEFORE container verification (HTTP 500 on urgent task).
@@ -60,10 +60,25 @@ def test_controlled_model_drill_end_to_end_offline():
     5. AFTER container verification (HTTP 201 on urgent task & SQLite persistence confirmed).
     Main checkout remains strictly unmodified. Zero host candidate execution.
     """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "unused-test-key")
+    def reject_provider(*args, **kwargs):
+        raise AssertionError("offline drill attempted provider access")
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", reject_provider)
+    reviewed = []
+    def simulated_review(proposal):
+        # This is a test double, not evidence of human intervention.
+        assert proposal["diff"]
+        assert has_task_creation_defect(Path(proposal["workspace_path"]))
+        reviewed.append(proposal["diff"])
+        return True
+
     res = run_controlled_model_drill(
         incident_id="test-model-drill-e2e",
-        human_approved=True,
+        review_callback=simulated_review,
+        api_key="unused-argument-key",
     )
+    assert reviewed
+
 
     assert res.get("success") is True
     assert res.get("execution_mode") == MODE_OFFLINE_SIMULATED
@@ -136,8 +151,7 @@ def test_controlled_model_drill_withheld_when_human_approval_denied():
     assert st4.get("human_approved") is False
 
     st5 = stages.get("stage_5_after_http", {})
-    assert st5.get("urgent_status") == 500
-    assert st5.get("urgent_persisted") is False
+    assert st5.get("status") == "not_run"
 
 
 def test_approval_rejected_if_not_confirmed():
@@ -146,7 +160,7 @@ def test_approval_rejected_if_not_confirmed():
     ws = create_disposable_workspace(repo_root, "test-confirm-false")
     try:
         inject_task_creation_defect(ws)
-        proposal = create_remediation_proposal("test-inc", ws)
+        proposal = create_remediation_proposal("test-confirm-false", ws)
         ticket = create_approval_ticket(proposal, confirmed=False)
 
         with pytest.raises(HumanReviewRejectedError, match="not explicitly confirmed"):
@@ -161,7 +175,7 @@ def test_approval_rejected_if_diff_hash_mismatch():
     ws = create_disposable_workspace(repo_root, "test-tamper-diff")
     try:
         inject_task_creation_defect(ws)
-        proposal = create_remediation_proposal("test-inc", ws)
+        proposal = create_remediation_proposal("test-tamper-diff", ws)
         ticket = create_approval_ticket(proposal, confirmed=True)
 
         tampered_diff = proposal["diff"] + "\n# malicious comment"
@@ -177,7 +191,7 @@ def test_approval_rejected_if_original_file_modified_concurrently():
     ws = create_disposable_workspace(repo_root, "test-concurrent-mod")
     try:
         inject_task_creation_defect(ws)
-        proposal = create_remediation_proposal("test-inc", ws)
+        proposal = create_remediation_proposal("test-concurrent-mod", ws)
         ticket = create_approval_ticket(proposal, confirmed=True)
 
         # Concurrently alter target file
@@ -198,7 +212,7 @@ def test_approval_rejected_if_workspace_path_mismatch():
     try:
         inject_task_creation_defect(ws1)
         inject_task_creation_defect(ws2)
-        proposal1 = create_remediation_proposal("test-inc-1", ws1)
+        proposal1 = create_remediation_proposal("test-ws-1", ws1)
         ticket1 = create_approval_ticket(proposal1, confirmed=True)
 
         with pytest.raises(HumanReviewRejectedError, match="Workspace path mismatch"):
@@ -242,90 +256,20 @@ def test_live_provider_mode_explicitly_blocked():
             run_controlled_model_drill(mode=MODE_LIVE_PROVIDER)
 
         with pytest.raises(PermissionError, match="Live provider remediation blocked"):
-            create_remediation_proposal("test-live", ws, mode=MODE_LIVE_PROVIDER)
+            create_remediation_proposal("test-live-mode", ws, mode=MODE_LIVE_PROVIDER)
     finally:
         cleanup_disposable_workspace(ws, "test-live-mode")
 
 
-def test_selective_container_recovery(monkeypatch, tmp_path):
-    """Verify selective container recovery:
-    1. Candidate without label tasklane.component=isolated-worker is NOT pruned.
-    2. Candidate in an active in-memory session is protected.
-    3. Candidate whose creator PID is alive and state is running is protected.
-    4. Confirmed orphaned container with valid label is safely pruned.
-    5. Daemon error/timeout records unknown_state without blind removal.
-    """
-    import subprocess
+def test_automatic_container_recovery_is_disabled(monkeypatch, tmp_path):
     import isolated_worker
-
-    fake_state_file = tmp_path / "test_pending.json"
-    fake_targets = ["cid-unrelated", "cid-active-session", "cid-running-alive", "cid-orphaned", "cid-inspect-err"]
-    fake_state_file.write_text(json.dumps(fake_targets), encoding="utf-8")
-    monkeypatch.setattr(isolated_worker, "_PENDING_CONTAINERS_STATE_FILE", fake_state_file)
-
-    # Put cid-active-session into an active session mock
-    mock_session = MagicMock()
-    mock_session.active_containers = {"cid-active-session"}
-    with _ACTIVE_SESSIONS_LOCK:
-        _ACTIVE_SESSIONS[Path("mock/staging")] = mock_session
-
-    removed_containers = []
-
-    def mock_run(cmd, **kwargs):
-        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
-        if "ps" in cmd_str:
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="\n".join(fake_targets) + "\n", stderr="")
-        if "inspect" in cmd_str:
-            target = cmd[3] if len(cmd) > 3 else ""
-            if target == "cid-unrelated":
-                # Missing isolated-worker label (e.g. database container)
-                data = [{"Config": {"Labels": {"com.docker.compose.project": "tasklane"}}, "State": {"Status": "running"}}]
-                return subprocess.CompletedProcess(cmd, returncode=0, stdout=json.dumps(data), stderr="")
-            elif target == "cid-running-alive":
-                # Valid label, creator is current pid (alive), running
-                data = [{
-                    "Config": {"Labels": {"tasklane.component": "isolated-worker", "tasklane.creator_pid": str(os.getpid())}},
-                    "State": {"Status": "running"}
-                }]
-                return subprocess.CompletedProcess(cmd, returncode=0, stdout=json.dumps(data), stderr="")
-            elif target == "cid-orphaned":
-                # Valid label, dead creator pid, exited
-                data = [{
-                    "Config": {"Labels": {"tasklane.component": "isolated-worker", "tasklane.creator_pid": "99999999"}},
-                    "State": {"Status": "exited"}
-                }]
-                return subprocess.CompletedProcess(cmd, returncode=0, stdout=json.dumps(data), stderr="")
-            elif target == "cid-inspect-err":
-                return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="daemon connection lost")
-            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="not found")
-        if "rm" in cmd_str:
-            target = cmd[-1]
-            removed_containers.append(target)
-            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
-        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", mock_run)
-
-    try:
-        report = IsolatedWorkerSession.recover_orphaned_containers()
-
-        # cid-orphaned was safely removed
-        assert "cid-orphaned" in report["cleaned_containers"]
-        assert "cid-orphaned" in removed_containers
-
-        # cid-unrelated was NOT removed (protected because no matching label)
-        assert "cid-unrelated" not in removed_containers
-
-        # cid-active-session and cid-running-alive were protected
-        assert "cid-active-session" in report["protected_containers"]
-        assert "cid-running-alive" in report["protected_containers"]
-        assert "cid-active-session" not in removed_containers
-        assert "cid-running-alive" not in removed_containers
-
-        # cid-inspect-err was reported as unknown_state without blind removal
-        assert "cid-inspect-err" in report["unknown_containers"]
-        assert "cid-inspect-err" not in removed_containers
-
-    finally:
-        with _ACTIVE_SESSIONS_LOCK:
-            _ACTIVE_SESSIONS.pop(Path("mock/staging"), None)
+    state_file = tmp_path / "pending.json"
+    state_file.write_text("{corrupt", encoding="utf-8")
+    monkeypatch.setattr(isolated_worker, "_PENDING_CONTAINERS_STATE_FILE", state_file)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("recovery must not remove containers")
+    monkeypatch.setattr(IsolatedWorkerSession, "_remove_docker_container", forbidden)
+    report = IsolatedWorkerSession.recover_orphaned_containers()
+    assert report["status"] == "automatic_recovery_disabled"
+    assert report["unknown_count"] > 0
+    assert state_file.read_text(encoding="utf-8") == "{corrupt"

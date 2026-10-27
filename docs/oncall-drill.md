@@ -24,8 +24,9 @@ TaskLane implements a bounded, local-only **diagnostic responder** and a separat
 10. **Resource Lifecycle, Crash Limitations & Recovery:**
    - *In-Process Lifetime:* Active sessions and container tracking sets reside in RAM and do NOT survive process crashes (SIGKILL, power failure, or OOM).
    - *No External Daemon Guarantee:* If the Docker daemon is unreachable or the process is killed abruptly, orphaned containers remain on the Docker host. No automatic OS watchdog or supervisor daemon exists.
-   - *Crash State Recovery:* Pending container IDs are mirrored to disk (`/tmp/tasklane_pending_containers.json`) for recovery via `IsolatedWorkerSession.recover_orphaned_containers()`.
-   - *Selective Host Recovery:* When Docker is accessible, operators can prune verified exited worker containers via: `docker rm -f $(docker ps -aq --filter "label=tasklane.component=isolated-worker" --filter "status=exited")` or invoke `IsolatedWorkerSession.recover_orphaned_containers()`. Broad prefix-based pruning (`name=tasklane-`) is strictly prohibited as it risks destroying active service containers (such as database instances).
+   - *Recovery:* The pending registry is best-effort, can be corrupt or overwritten by concurrent processes, and cannot establish cross-process activity. Automatic orphan recovery is disabled and reports unknown state. Orderly sessions still attempt cleanup of their own resources.
+   - *Manual recovery:* List labeled workers and inspect each resource individually. Check its full Docker ID, name, `tasklane.session_id`, state and owner with the operator responsible for concurrent sessions. Created, paused and running containers may all be active. Remove a specific resource only after establishing it is no longer in use. PID alone is not proof of inactivity.
+
 
 ---
 
@@ -151,14 +152,14 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
 - **DeepSeek Flash Agent Adapter & Controlled Local Demonstration:**
   - *Adapter Design:* `DeepSeekAgentAdapter` implements read-only diagnosis (`diagnose`) and isolated remediation proposal (`repair`). API calls strictly enforce HTTPS, allowed host origins (`api.deepseek.com`), bounded response size, sanitized error reporting, and stripped authorization headers across redirects.
   - *5-Stage Controlled Demonstration Flow (`model_drill.py`):*
-    1. Firing alert webhook and read-only diagnosis.
+    1. Simulated alert context and simulated read-only diagnosis.
     2. Defect injection strictly into disposable workspace & BEFORE HTTP verification (normal=201, urgent=500).
-    3. Model diff proposal & isolated container evaluation: automatic patch application is disabled by policy; target file remains defective.
+    3. Synthetic diff proposal & isolated container evaluation: automatic patch application is disabled by policy; target file remains defective.
     4. Explicit human review and approval: operator inspects diff and confirms application strictly to disposable workspace.
     5. AFTER HTTP verification: urgent task returns 201 and is persisted in local SQLite. Main repository checkout and production are never modified.
   - *Offline Simulation vs Live Model Execution:* All local regression tests and demonstrations run offline using simulated/mock model responses. No live calls to DeepSeek API or real credentials are used in tests.
-  - *Verifier Limitations:* In-process pytest shares Python runtime with candidate code (advisory only). SQLite persistence confirms disk writes but candidate and verifier share user UID 10001 and filesystem permissions.
-  - *Human Approval Limitations:* Human review serves as a mandatory security authorization gate against unapproved changes; it is an authorization boundary, not an automated formal mathematical proof of correctness.
+  - *Verifier Limitations:* Loopback HTTP checks run in a separate process inside the same container, not a separate security domain. In-process pytest shares Python runtime with candidate code and is advisory only. SQLite inspection shares UID 10001 and filesystem permissions with the candidate, which can alter the database. For the DeepSeek adapter, `tests_passed` remains false on both successful and failed functional verification; `tests_passed_advisory` reports pytest only. The responder requires `tests_passed` for success and therefore cannot present this advisory result as a verified repair.
+  - *Human Approval Limitations:* The CLI displays the diff, workspace and hashes, then asks the operator to type YES. The programmatic callback is a trust boundary: tests can simulate confirmation but cannot prove a human reviewed it. Preapproval is rejected. The current-process workspace registration and hashes are checked again before writing; symlinks are rejected. Portable filesystem operations cannot eliminate a race between the last check and replacement, nor protect against a hostile process with the same user privileges. Run only one supervised drill at a time in a private workspace with no concurrent writers: the shared workspace retention and disk registry are not coordinated across processes and can remove another drill's workspace.
 - **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation is intentionally disabled. The limited diagnosis-only PR was approved and merged; full autonomous AI code remediation is still unproven.
 
 ---
@@ -174,15 +175,14 @@ uv run --project backend python incident-response/model_drill.py
 ```
 
 ### 7.2 Recovering Orphaned Containers Safely
-If the controller process crashes abruptly or Docker was unreachable during exit, recover orphaned containers safely without endangering active services:
+Automatic orphan recovery is disabled because the registry is not a reliable cross-process ownership record. Do not use bulk removal commands. List and inspect resources individually:
 
 ```bash
-# Selective recovery via TaskLane Python API (inspects labels, creator PID, and execution status):
-python -c "from isolated_worker import IsolatedWorkerSession; print(IsolatedWorkerSession.recover_orphaned_containers())"
-
-# Or manual operator fallback targeting only exited worker containers:
-docker rm -f $(docker ps -aq --filter "label=tasklane.component=isolated-worker" --filter "status=exited")
+docker ps -a --filter "label=tasklane.component=isolated-worker" --no-trunc
+docker container inspect <individual-container-id>
 ```
+
+Confirm the full ID, name, labels, session and activity with the responsible operator before deciding whether to remove that individual container. Unknown or corrupt registry state is not evidence of cleanup.
 
 ### 7.3 Running Automated Unit & Security Tests
 Verify all 54 responder tests at merged PR #9 baseline, covering alert validation, atomic token auth, single-use consumption, incorrect-token preservation, workspace registry, positive manifest isolation, unsafe override rejection, and mock remediation:

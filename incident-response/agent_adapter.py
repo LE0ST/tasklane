@@ -1046,7 +1046,7 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                         "status": "repair_failed",
                         "error": ERROR_TEST_VERIFICATION_FAILED,
                         "diff": diff_text,
-                        "tests_passed": bool(pytest_passed),
+                        "tests_passed": False,
                         "tests_passed_advisory": bool(pytest_passed),
                         "independent_validation": False,
                         "authoritative_verified": False,

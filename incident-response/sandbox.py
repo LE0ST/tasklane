@@ -90,6 +90,11 @@ def get_registered_workspace(incident_id: str) -> Optional[Path]:
     return None
 
 
+def is_active_workspace_registration(incident_id: str, path: Path) -> bool:
+    """Require the current process's explicit registration, without disk fallback."""
+    return _workspace_registry.get(incident_id) == path.resolve()
+
+
 def unregister_workspace(incident_id: str) -> None:
     """Remove a workspace registration upon cleanup."""
     _workspace_registry.pop(incident_id, None)
@@ -561,13 +566,13 @@ def validate_safe_target_file(target_file: Path, workspace_root: Path) -> Path:
     resolved_ws = workspace_root.resolve()
     resolved_file = target_file.resolve()
 
-    if target_file.is_symlink():
+    if target_file.is_symlink() or getattr(target_file, "is_junction", lambda: False)():
         raise SecurityViolation(f"Target file is a symlink: {target_file}")
 
     # Verify no parent directory between target_file and workspace_root is a symlink
     curr = target_file.parent
     while curr != workspace_root and curr != curr.parent:
-        if curr.is_symlink():
+        if curr.is_symlink() or getattr(curr, "is_junction", lambda: False)():
             raise SecurityViolation(f"Target path ancestor is a symlink: {curr}")
         if curr.resolve() == resolved_ws:
             break

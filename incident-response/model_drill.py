@@ -25,7 +25,7 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 IR_DIR = Path(__file__).resolve().parent
 if str(IR_DIR) not in sys.path:
@@ -55,6 +55,7 @@ from isolated_worker import (
 from sandbox import (
     cleanup_disposable_workspace,
     create_disposable_workspace,
+    is_active_workspace_registration,
 )
 
 MODE_OFFLINE_SIMULATED = "offline_simulated"
@@ -64,6 +65,13 @@ MODE_LIVE_PROVIDER = "live_provider"
 class HumanReviewRejectedError(PermissionError):
     """Raised when an automated or unapproved attempt is made to apply a model patch."""
     pass
+
+
+def _reject_workspace_links(path: Path) -> None:
+    """Reject links in the supplied workspace path, including Windows junctions."""
+    for component in (path.absolute(), *path.absolute().parents):
+        if component.is_symlink() or getattr(component, "is_junction", lambda: False)():
+            raise HumanReviewRejectedError("Workspace path contains a link")
 
 
 def generate_synthetic_remediation_diff(original_content: str) -> str:
@@ -106,7 +114,12 @@ def create_remediation_proposal(
     """Generate a candidate remediation proposal and advisory worker evaluation.
     Target file in the workspace remains untouched.
     """
-    safe_ws = validate_safe_workspace_path(workspace_path, enforce_registry=False)
+    if mode != MODE_OFFLINE_SIMULATED:
+        raise PermissionError("Live provider remediation blocked")
+    _reject_workspace_links(Path(workspace_path))
+    if not is_active_workspace_registration(incident_id, Path(workspace_path)):
+        raise PermissionError("Active workspace registration required")
+    safe_ws = validate_safe_workspace_path(workspace_path, required_incident_id=incident_id)
     repo_root = Path(__file__).resolve().parents[1]
     if safe_ws == repo_root or repo_root in safe_ws.parents:
         raise PermissionError(f"Security violation: Cannot propose remediation for repository root: {safe_ws}")
@@ -115,17 +128,12 @@ def create_remediation_proposal(
     original_bytes = target_file.read_bytes()
     original_file_sha256 = hashlib.sha256(original_bytes).hexdigest()
 
-    if mode == MODE_LIVE_PROVIDER:
-        raise PermissionError(
-            "Live provider remediation blocked: autonomous write-capable execution not authorized for live provider"
-        )
-
     # In MODE_OFFLINE_SIMULATED:
     diff_text = simulated_diff or generate_synthetic_remediation_diff(original_bytes.decode("utf-8"))
     diff_sha256 = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
 
     # Evaluate in isolated worker via DeepSeekAgentAdapter with write_capable_enabled=True
-    adapter = DeepSeekAgentAdapter(api_key=api_key or "mock-offline-key")
+    adapter = DeepSeekAgentAdapter(api_key="offline-placeholder")
     adapter.write_capable_enabled = True
 
     ctx = incident_context or {
@@ -133,22 +141,18 @@ def create_remediation_proposal(
         "trace_id": f"trace-{incident_id}",
     }
 
-    from unittest.mock import MagicMock, patch
-    mock_payload = {
-        "choices": [{"message": {"role": "assistant", "content": f"```diff\n{diff_text}\n```"}}]
-    }
-    body = json.dumps(mock_payload).encode("utf-8")
-    mock_resp = MagicMock()
-    mock_resp.read.return_value = body
-    mock_resp.__enter__.return_value = mock_resp
-    mock_resp.__exit__.return_value = None
+    from unittest.mock import patch
 
-    with patch("urllib.request.OpenerDirector.open", return_value=mock_resp):
+    with patch.object(adapter, "_call_api", return_value=(f"```diff\n{diff_text}\n```", None)):
         repair_result = adapter.repair(
             ctx,
             workspace_path=safe_ws,
             operator_approved=True,
         )
+
+    # No provider or model was executed in the simulated path.
+    repair_result["model_executed"] = False
+    repair_result["execution_mode"] = MODE_OFFLINE_SIMULATED
 
     # Confirm workspace target file was untouched
     assert target_file.read_bytes() == original_bytes, "Workspace target file was illegally modified during proposal!"
@@ -164,7 +168,7 @@ def create_remediation_proposal(
         "status": "proposal_generated",
         "advisory_pytest": repair_result.get("pytest_verification"),
         "advisory_persistence": repair_result.get("persistence_verification"),
-        "tests_passed_advisory": repair_result.get("tests_passed_advisory", True),
+        "tests_passed_advisory": repair_result.get("tests_passed_advisory", False),
         "repair_result": repair_result,
     }
 
@@ -181,7 +185,7 @@ def create_approval_ticket(
         "expected_workspace_path": proposal.get("workspace_path"),
         "expected_original_file_sha256": proposal.get("original_file_sha256"),
         "expected_diff_sha256": proposal.get("diff_sha256"),
-        "confirmed": bool(confirmed),
+        "confirmed": confirmed is True,
         "reviewer": reviewer,
     }
 
@@ -204,6 +208,7 @@ def apply_human_reviewed_patch(
     4. Repo root protection: Repository root and production environments are strictly protected and never touched.
     """
     repo_root = Path(__file__).resolve().parents[1]
+    _reject_workspace_links(Path(workspace_path))
     safe_ws = Path(workspace_path).resolve()
     if safe_ws == repo_root or repo_root in safe_ws.parents:
         raise PermissionError(
@@ -232,7 +237,12 @@ def apply_human_reviewed_patch(
             f"Security violation: Workspace path mismatch. Ticket bound to {ticket_ws_str}, but received {safe_ws}"
         )
 
-    validated_ws = validate_safe_workspace_path(safe_ws, enforce_registry=False)
+    incident_id = approval_ticket.get("incident_id")
+    if not isinstance(incident_id, str) or not incident_id:
+        raise HumanReviewRejectedError("Incident registration required")
+    if not is_active_workspace_registration(incident_id, Path(workspace_path)):
+        raise HumanReviewRejectedError("Active workspace registration required")
+    validated_ws = validate_safe_workspace_path(Path(workspace_path), required_incident_id=incident_id)
     raw_target = get_target_file(validated_ws)
     target_file = validate_safe_target_file(raw_target, validated_ws)
 
@@ -260,6 +270,14 @@ def apply_human_reviewed_patch(
     if not applied:
         raise RuntimeError("Failed to apply unified diff to target file")
 
+    # Recheck immediately before replacement; portable APIs cannot make this a CAS.
+    _reject_workspace_links(Path(workspace_path))
+    if not is_active_workspace_registration(incident_id, validated_ws):
+        raise HumanReviewRejectedError("Workspace registration changed before write")
+    validate_safe_workspace_path(Path(workspace_path), required_incident_id=incident_id)
+    validate_safe_target_file(get_target_file(validated_ws), validated_ws)
+    if hashlib.sha256(target_file.read_bytes()).hexdigest() != current_hash:
+        raise HumanReviewRejectedError("Target changed before write")
     atomic_write_file(target_file, repaired_content)
 
     return {
@@ -273,7 +291,8 @@ def apply_human_reviewed_patch(
 
 def run_controlled_model_drill(
     incident_id: Optional[str] = None,
-    human_approved: bool = True,
+    human_approved: bool = False,
+    review_callback: Optional[Callable[[Dict[str, Any]], bool]] = None,
     simulated_diff: Optional[str] = None,
     api_key: Optional[str] = None,
     mode: str = MODE_OFFLINE_SIMULATED,
@@ -295,12 +314,14 @@ def run_controlled_model_drill(
        - Proposal returned with original_file_sha256 and diff_sha256.
     4. Explicit Human Review:
        - Operator reviews proposed diff and generates cryptographic approval ticket.
-       - If human_approved=True, patch applied strictly to disposable workspace after hash validation.
+       - A review callback receives the diff before an explicit True can authorize application.
     5. AFTER Container Verification & Persistence Check:
        - Verified inside isolated worker container: normal=201, urgent=201, db_verified=True.
        - Main repository root checkout verified completely unmodified.
     """
-    if mode == MODE_LIVE_PROVIDER:
+    if human_approved is not False:
+        raise PermissionError("Pre-approval is not accepted; review the proposal first")
+    if mode != MODE_OFFLINE_SIMULATED:
         raise PermissionError(
             "Live provider remediation blocked: autonomous write-capable execution not authorized for live provider"
         )
@@ -315,27 +336,12 @@ def run_controlled_model_drill(
 
     try:
         # Stage 1: Alert Receipt & Read-Only Telemetry Diagnosis
-        adapter = DeepSeekAgentAdapter(api_key=api_key or "mock-offline-key")
-        incident_context = {
-            "alertname": EXPECTED_ALERT_NAME,
-            "trace_id": f"trace-{inc_id}",
-            "error_count": 5,
-            "logs": "POST /api/tasks priority=urgent -> HTTP 500 RuntimeError",
+        diag_result = {
+            "adapter": "offline_simulated", "model_executed": False,
+            "read_only": True, "status": "diagnosed",
+            "analysis": "Simulated diagnosis of the injected urgent task failure.",
         }
-
-        if not api_key:
-            diag_result = {
-                "adapter": adapter.adapter_name,
-                "model_executed": True,
-                "read_only": True,
-                "status": "diagnosed",
-                "analysis": (
-                    "Telemetric analysis identifies uncaught RuntimeError during urgent task dispatch. "
-                    "Read-only diagnostic complete; no shell commands executed."
-                ),
-            }
-        else:
-            diag_result = adapter.diagnose(incident_context)
+        incident_context = {"alertname": EXPECTED_ALERT_NAME, "trace_id": f"trace-{inc_id}"}
 
         # Stage 2: Inject defect & BEFORE verification STRICTLY INSIDE ISOLATED WORKER CONTAINER
         inject_task_creation_defect(ws)
@@ -371,8 +377,10 @@ def run_controlled_model_drill(
         patch_applied_by_human = False
         human_review_result = {}
 
-        if human_approved:
-            ticket = create_approval_ticket(proposal, confirmed=True)
+        # The callback receives the full diff before it can return an explicit decision.
+        decision = review_callback(dict(proposal)) if review_callback is not None else False
+        if decision is True:
+            ticket = create_approval_ticket(proposal, confirmed=decision)
             human_review_result = apply_human_reviewed_patch(
                 workspace_path=ws,
                 diff_text=proposal["diff"],
@@ -398,12 +406,7 @@ def run_controlled_model_drill(
             assert after_http.get("urgent_persisted") is True, "Urgent task must be persisted in SQLite"
             overall_success = True
         else:
-            after_http = {
-                "normal_status": 201,
-                "urgent_status": 500,
-                "urgent_persisted": False,
-                "db_verified": False,
-            }
+            after_http = {"status": "not_run"}
             overall_success = False
 
         # Verification of main checkout isolation: repo root must never have been modified
@@ -424,6 +427,7 @@ def run_controlled_model_drill(
             "disposable_workspace": str(ws),
             "proposal": {
                 "proposal_id": proposal.get("proposal_id"),
+                "diff": proposal.get("diff"),
                 "original_file_sha256": proposal.get("original_file_sha256"),
                 "diff_sha256": proposal.get("diff_sha256"),
             },
@@ -435,8 +439,8 @@ def run_controlled_model_drill(
                 ),
                 "http_verification_scope": (
                     "HTTP checks run over loopback inside the isolated worker container with --network none. "
-                    "Verifies end-to-end API response codes (201 vs 500) from independent verifier process, "
-                    "preventing in-process monkeypatching of requests."
+                    "A separate verifier process checks API response codes; shared container privileges "
+                    "do not establish an independent security boundary."
                 ),
                 "sqlite_persistence_scope": (
                     "SQLite verification directly inspects the database file on disk (/tmp/tasklane.db) "
@@ -461,7 +465,14 @@ def run_controlled_model_drill(
 
 if __name__ == "__main__":
     print("Executing TaskLane Controlled Model Remediation Drill...")
-    res = run_controlled_model_drill()
+    def review(proposal):
+        print("Proposed diff:\n" + proposal["diff"])
+        print("Workspace:", proposal["workspace_path"])
+        print("Original SHA-256:", proposal["original_file_sha256"])
+        print("Diff SHA-256:", proposal["diff_sha256"])
+        return input("Apply this diff to the disposable workspace? Type YES: ") == "YES"
+
+    res = run_controlled_model_drill(review_callback=review)
     print("Drill finished:")
     print(json.dumps(res, indent=2))
     sys.exit(0 if res.get("success") else 1)

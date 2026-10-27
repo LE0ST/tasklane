@@ -31,14 +31,9 @@ CRITICAL ARCHITECTURAL CONSTRAINTS & SECURITY GUARANTEES:
      abrupt controller process crashes (SIGKILL, power failure, or OOM).
    - On orderly exit, atexit handlers perform best-effort cleanup; however, if the Docker daemon
      was unreachable or times out, containers remain on the host.
-   - To assist recovery, pending container IDs are mirrored to a state file on disk
-     (/tmp/tasklane_pending_containers.json), and IsolatedWorkerSession.recover_orphaned_containers()
-     can be invoked once the daemon recovers to discover and prune orphaned containers.
-   - Without an external OS supervisor daemon or watchdog, host cleanup after a process crash with
-     Docker down cannot be guaranteed automatically; operators must invoke selective recovery via:
-     IsolatedWorkerSession.recover_orphaned_containers() or prune verified exited worker containers:
-     docker rm -f $(docker ps -aq --filter "label=tasklane.component=isolated-worker" --filter "status=exited")
-     (Broad name-based pruning by prefix is prohibited as it risks destroying active service containers).
+   - The best-effort pending registry may be stale, corrupt, or concurrently overwritten.
+     Automatic orphan recovery is disabled. List labeled containers and inspect each one,
+     including its full ID, name, session label and state, before any manual removal.
    - Session initialization uses per-path event synchronization to prevent partial visibility across threads.
 7. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
 """
@@ -474,169 +469,17 @@ class IsolatedWorkerSession:
 
     @classmethod
     def recover_orphaned_containers(cls, max_retries: int = 3) -> Dict[str, Any]:
-        """Recover and safely prune orphaned worker containers while protecting active resources.
+        """Automatic orphan recovery is disabled: cross-process ownership is not reliable.
 
-        SAFETY AND OWNERSHIP CONSTRAINTS (Audit Sol):
-        1. No broad name pruning: Containers are never selected by prefix matching alone.
-           Candidate containers must have label 'tasklane.component=isolated-worker'.
-        2. Execution state verification: Inspects container status ('running', 'exited', 'dead').
-        3. Protect active resources:
-           - Containers registered to an active in-memory session are strictly protected.
-           - Containers whose creator_pid is alive and in 'running' state are protected.
-        4. Unknown state reporting:
-           - If inspect fails or daemon is unreachable/timed out, container status is reported as
-             'unknown_state' / 'daemon_inaccessible', and no blind removal is attempted.
-        5. Selective cleanup:
-           - Only verified orphaned containers (ownership confirmed, not active, and creator dead
-             or container stopped) are pruned with bounded timeouts.
+        The persistent registry is advisory and may be corrupt, stale, or concurrently
+        overwritten. Never infer that a resource is inactive or remove one here.
         """
-        all_candidate_ids: Set[str] = set()
-
-        # 1. Targets previously recorded in persistent on-disk state file
-        all_candidate_ids.update(_load_pending_containers_from_disk())
-
-        # 2. Query Docker daemon specifically for containers labeled tasklane.component=isolated-worker
-        try:
-            res = subprocess.run(
-                ["docker", "ps", "-aq", "--filter", "label=tasklane.component=isolated-worker"],
-                capture_output=True,
-                text=True,
-                timeout=CLEANUP_TIMEOUT_SECONDS,
-                check=False,
-            )
-            if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    cid = line.strip()
-                    if cid:
-                        all_candidate_ids.add(cid)
-            else:
-                return {
-                    "status": "daemon_inaccessible",
-                    "error": f"Failed to list labeled containers: {res.stderr.strip()[:200]}",
-                    "recovered_attempted": 0,
-                    "cleaned_count": 0,
-                    "protected_active_count": 0,
-                    "unknown_count": len(all_candidate_ids),
-                    "failed_count": 0,
-                    "cleaned_containers": [],
-                    "protected_containers": [],
-                    "unknown_containers": list(all_candidate_ids),
-                    "failed_containers": [],
-                }
-        except (subprocess.TimeoutExpired, OSError) as exc:
-            return {
-                "status": "daemon_inaccessible",
-                "error": str(exc),
-                "recovered_attempted": 0,
-                "cleaned_count": 0,
-                "protected_active_count": 0,
-                "unknown_count": len(all_candidate_ids),
-                "failed_count": 0,
-                "cleaned_containers": [],
-                "protected_containers": [],
-                "unknown_containers": list(all_candidate_ids),
-                "failed_containers": [],
-            }
-
-        cleaned: List[str] = []
-        protected_active: List[str] = []
-        unknown_state: List[str] = []
-        failed: List[str] = []
-
-        # Find all currently active container IDs across registered in-memory sessions
-        with _ACTIVE_SESSIONS_LOCK:
-            active_session_containers: Set[str] = set()
-            for s in _ACTIVE_SESSIONS.values():
-                active_session_containers.update(s.active_containers)
-
-        for cid in list(all_candidate_ids):
-            # Check 1: Is it in an active in-memory session?
-            if cid in active_session_containers:
-                protected_active.append(cid)
-                continue
-
-            # Check 2: Inspect container to verify ownership and execution state
-            try:
-                inspect_res = subprocess.run(
-                    ["docker", "container", "inspect", cid],
-                    capture_output=True,
-                    text=True,
-                    timeout=CLEANUP_TIMEOUT_SECONDS,
-                    check=False,
-                )
-                if inspect_res.returncode != 0:
-                    inspect_err = inspect_res.stderr.lower()
-                    if "no such container" in inspect_err:
-                        with _ACTIVE_SESSIONS_LOCK:
-                            _PENDING_CONTAINERS.discard(cid)
-                        continue
-                    unknown_state.append(cid)
-                    continue
-
-                inspect_data_list = json.loads(inspect_res.stdout)
-                if not inspect_data_list or not isinstance(inspect_data_list, list):
-                    unknown_state.append(cid)
-                    continue
-
-                c_info = inspect_data_list[0]
-                labels = c_info.get("Config", {}).get("Labels") or {}
-                state_info = c_info.get("State", {}) or {}
-                status_str = state_info.get("Status", "").lower()
-
-                # Verify ownership label
-                if labels.get("tasklane.component") != "isolated-worker":
-                    # Does not belong to TaskLane isolated worker; DO NOT PRUNE!
-                    continue
-
-                # Check creator PID and running state
-                creator_pid_str = labels.get("tasklane.creator_pid")
-                creator_is_alive = False
-                if creator_pid_str and creator_pid_str.isdigit():
-                    creator_is_alive = _is_pid_alive(int(creator_pid_str))
-
-                # Protect active running containers whose creator is alive
-                if creator_is_alive and status_str == "running":
-                    protected_active.append(cid)
-                    continue
-
-                # Container is confirmed orphaned: attempt bounded removal
-                is_gone, rm_status = cls._remove_docker_container(cid, max_retries=max_retries)
-                if is_gone:
-                    cleaned.append(cid)
-                    with _ACTIVE_SESSIONS_LOCK:
-                        _PENDING_CONTAINERS.discard(cid)
-                else:
-                    if rm_status in ("daemon_inaccessible", "unknown"):
-                        unknown_state.append(cid)
-                    else:
-                        failed.append(cid)
-
-            except (subprocess.TimeoutExpired, OSError):
-                unknown_state.append(cid)
-            except Exception:
-                unknown_state.append(cid)
-
-        _sync_pending_containers_to_disk()
-
-        overall_status = "all_cleaned"
-        if failed:
-            overall_status = "removal_failed"
-        elif unknown_state:
-            overall_status = "unknown_state_remain"
-        elif protected_active:
-            overall_status = "active_protected"
-
         return {
-            "status": overall_status,
-            "recovered_attempted": len(all_candidate_ids),
-            "cleaned_count": len(cleaned),
-            "protected_active_count": len(protected_active),
-            "unknown_count": len(unknown_state),
-            "failed_count": len(failed),
-            "cleaned_containers": cleaned,
-            "protected_containers": protected_active,
-            "unknown_containers": unknown_state,
-            "failed_containers": failed,
+            "status": "automatic_recovery_disabled", "recovered_attempted": 0,
+            "cleaned_count": 0, "protected_active_count": 0, "unknown_count": 1,
+            "failed_count": 0, "cleaned_containers": [], "protected_containers": [],
+            "unknown_containers": [], "failed_containers": [],
+            "detail": "Registry and activity cannot be verified across processes; inspect resources individually.",
         }
 
     def __enter__(self) -> "IsolatedWorkerSession":
