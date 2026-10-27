@@ -303,7 +303,7 @@ def test_deepseek_adapter_repair_withholds_automatic_patch_application(monkeypat
 
         # Verification in isolated worker passed
         assert res.get("model_executed") is True
-        assert res.get("tests_passed") is True
+        assert res.get("tests_passed") is False  # Non-authoritative: in-process tests cannot grant independent pass status
         assert res.get("tests_passed_advisory") is True
         assert res.get("functional_verified") is True
         assert res.get("independent_validation") is False

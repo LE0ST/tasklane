@@ -25,7 +25,7 @@ TaskLane implements a bounded, local-only **diagnostic responder** and a separat
    - *In-Process Lifetime:* Active sessions and container tracking sets reside in RAM and do NOT survive process crashes (SIGKILL, power failure, or OOM).
    - *No External Daemon Guarantee:* If the Docker daemon is unreachable or the process is killed abruptly, orphaned containers remain on the Docker host. No automatic OS watchdog or supervisor daemon exists.
    - *Crash State Recovery:* Pending container IDs are mirrored to disk (`/tmp/tasklane_pending_containers.json`) for recovery via `IsolatedWorkerSession.recover_orphaned_containers()`.
-   - *Manual Host Cleanup:* When Docker is accessible, operators can prune any leftover containers with: `docker rm -f $(docker ps -aq --filter "name=tasklane-")`.
+   - *Selective Host Recovery:* When Docker is accessible, operators can prune verified exited worker containers via: `docker rm -f $(docker ps -aq --filter "label=tasklane.component=isolated-worker" --filter "status=exited")` or invoke `IsolatedWorkerSession.recover_orphaned_containers()`. Broad prefix-based pruning (`name=tasklane-`) is strictly prohibited as it risks destroying active service containers (such as database instances).
 
 ---
 
@@ -173,11 +173,15 @@ uv run --project backend pytest incident-response/tests/test_model_drill.py -v
 uv run --project backend python incident-response/model_drill.py
 ```
 
-### 7.2 Recovering Orphaned Containers
-If the controller process crashes abruptly or Docker was unreachable during exit, recover orphaned containers with:
+### 7.2 Recovering Orphaned Containers Safely
+If the controller process crashes abruptly or Docker was unreachable during exit, recover orphaned containers safely without endangering active services:
 
 ```bash
-docker rm -f $(docker ps -aq --filter "name=tasklane-")
+# Selective recovery via TaskLane Python API (inspects labels, creator PID, and execution status):
+python -c "from isolated_worker import IsolatedWorkerSession; print(IsolatedWorkerSession.recover_orphaned_containers())"
+
+# Or manual operator fallback targeting only exited worker containers:
+docker rm -f $(docker ps -aq --filter "label=tasklane.component=isolated-worker" --filter "status=exited")
 ```
 
 ### 7.3 Running Automated Unit & Security Tests

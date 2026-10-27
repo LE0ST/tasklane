@@ -35,8 +35,10 @@ CRITICAL ARCHITECTURAL CONSTRAINTS & SECURITY GUARANTEES:
      (/tmp/tasklane_pending_containers.json), and IsolatedWorkerSession.recover_orphaned_containers()
      can be invoked once the daemon recovers to discover and prune orphaned containers.
    - Without an external OS supervisor daemon or watchdog, host cleanup after a process crash with
-     Docker down cannot be guaranteed automatically; operators must run:
-     docker rm -f $(docker ps -aq --filter "name=tasklane-")
+     Docker down cannot be guaranteed automatically; operators must invoke selective recovery via:
+     IsolatedWorkerSession.recover_orphaned_containers() or prune verified exited worker containers:
+     docker rm -f $(docker ps -aq --filter "label=tasklane.component=isolated-worker" --filter "status=exited")
+     (Broad name-based pruning by prefix is prohibited as it risks destroying active service containers).
    - Session initialization uses per-path event synchronization to prevent partial visibility across threads.
 7. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
 """
@@ -96,6 +98,35 @@ def _load_pending_containers_from_disk() -> Set[str]:
     except Exception:
         pass
     return set()
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with the given PID is currently alive on the host."""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        h_proc = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h_proc:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(h_proc, ctypes.byref(exit_code)):
+                return exit_code.value == STILL_ACTIVE
+            return False
+        finally:
+            kernel32.CloseHandle(h_proc)
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
 
 
 def _emergency_cleanup_on_exit():
@@ -178,6 +209,7 @@ class IsolatedWorkerSession:
                 _test_pause_hook()
 
             self.staging_dir = resolved
+            self.session_id: str = getattr(self, "session_id", str(uuid.uuid4()))
             self.active_containers: Set[str] = set()
             self.pending_cleanup_containers: Set[str] = set()
             self._lock = threading.RLock()
@@ -442,24 +474,31 @@ class IsolatedWorkerSession:
 
     @classmethod
     def recover_orphaned_containers(cls, max_retries: int = 3) -> Dict[str, Any]:
-        """Recover and attempt to remove any orphaned containers remaining from previous executions.
+        """Recover and safely prune orphaned worker containers while protecting active resources.
 
-        RECOVERY MECHANISM & LIMITATIONS:
-        - In-memory registries do not survive controller crashes, SIGKILL (kill -9), or ungraceful exits.
-        - This helper inspects both the persistent on-disk state file (_PENDING_CONTAINERS_STATE_FILE)
-          and queries the host Docker daemon for containers with names matching 'tasklane-'.
-        - If the Docker daemon is accessible, it removes all discovered orphaned containers with retries.
-        - If the Docker daemon remains inaccessible, unremoved containers are preserved in the state file.
-        - Manual operator fallback: `docker rm -f $(docker ps -aq --filter "name=tasklane-")`
+        SAFETY AND OWNERSHIP CONSTRAINTS (Audit Sol):
+        1. No broad name pruning: Containers are never selected by prefix matching alone.
+           Candidate containers must have label 'tasklane.component=isolated-worker'.
+        2. Execution state verification: Inspects container status ('running', 'exited', 'dead').
+        3. Protect active resources:
+           - Containers registered to an active in-memory session are strictly protected.
+           - Containers whose creator_pid is alive and in 'running' state are protected.
+        4. Unknown state reporting:
+           - If inspect fails or daemon is unreachable/timed out, container status is reported as
+             'unknown_state' / 'daemon_inaccessible', and no blind removal is attempted.
+        5. Selective cleanup:
+           - Only verified orphaned containers (ownership confirmed, not active, and creator dead
+             or container stopped) are pruned with bounded timeouts.
         """
-        all_targets: Set[str] = set()
-        all_targets.update(_load_pending_containers_from_disk())
-        with _ACTIVE_SESSIONS_LOCK:
-            all_targets.update(_PENDING_CONTAINERS)
+        all_candidate_ids: Set[str] = set()
 
+        # 1. Targets previously recorded in persistent on-disk state file
+        all_candidate_ids.update(_load_pending_containers_from_disk())
+
+        # 2. Query Docker daemon specifically for containers labeled tasklane.component=isolated-worker
         try:
             res = subprocess.run(
-                ["docker", "ps", "-aq", "--filter", "name=tasklane-"],
+                ["docker", "ps", "-aq", "--filter", "label=tasklane.component=isolated-worker"],
                 capture_output=True,
                 text=True,
                 timeout=CLEANUP_TIMEOUT_SECONDS,
@@ -469,34 +508,135 @@ class IsolatedWorkerSession:
                 for line in res.stdout.splitlines():
                     cid = line.strip()
                     if cid:
-                        all_targets.add(cid)
-        except Exception:
-            pass
+                        all_candidate_ids.add(cid)
+            else:
+                return {
+                    "status": "daemon_inaccessible",
+                    "error": f"Failed to list labeled containers: {res.stderr.strip()[:200]}",
+                    "recovered_attempted": 0,
+                    "cleaned_count": 0,
+                    "protected_active_count": 0,
+                    "unknown_count": len(all_candidate_ids),
+                    "failed_count": 0,
+                    "cleaned_containers": [],
+                    "protected_containers": [],
+                    "unknown_containers": list(all_candidate_ids),
+                    "failed_containers": [],
+                }
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return {
+                "status": "daemon_inaccessible",
+                "error": str(exc),
+                "recovered_attempted": 0,
+                "cleaned_count": 0,
+                "protected_active_count": 0,
+                "unknown_count": len(all_candidate_ids),
+                "failed_count": 0,
+                "cleaned_containers": [],
+                "protected_containers": [],
+                "unknown_containers": list(all_candidate_ids),
+                "failed_containers": [],
+            }
 
         cleaned: List[str] = []
+        protected_active: List[str] = []
+        unknown_state: List[str] = []
         failed: List[str] = []
 
-        for cid in list(all_targets):
-            is_gone, _ = cls._remove_docker_container(cid, max_retries=max_retries)
-            if is_gone:
-                cleaned.append(cid)
-                with _ACTIVE_SESSIONS_LOCK:
-                    _PENDING_CONTAINERS.discard(cid)
-            else:
-                failed.append(cid)
-                with _ACTIVE_SESSIONS_LOCK:
-                    _PENDING_CONTAINERS.add(cid)
+        # Find all currently active container IDs across registered in-memory sessions
+        with _ACTIVE_SESSIONS_LOCK:
+            active_session_containers: Set[str] = set()
+            for s in _ACTIVE_SESSIONS.values():
+                active_session_containers.update(s.active_containers)
+
+        for cid in list(all_candidate_ids):
+            # Check 1: Is it in an active in-memory session?
+            if cid in active_session_containers:
+                protected_active.append(cid)
+                continue
+
+            # Check 2: Inspect container to verify ownership and execution state
+            try:
+                inspect_res = subprocess.run(
+                    ["docker", "container", "inspect", cid],
+                    capture_output=True,
+                    text=True,
+                    timeout=CLEANUP_TIMEOUT_SECONDS,
+                    check=False,
+                )
+                if inspect_res.returncode != 0:
+                    inspect_err = inspect_res.stderr.lower()
+                    if "no such container" in inspect_err:
+                        with _ACTIVE_SESSIONS_LOCK:
+                            _PENDING_CONTAINERS.discard(cid)
+                        continue
+                    unknown_state.append(cid)
+                    continue
+
+                inspect_data_list = json.loads(inspect_res.stdout)
+                if not inspect_data_list or not isinstance(inspect_data_list, list):
+                    unknown_state.append(cid)
+                    continue
+
+                c_info = inspect_data_list[0]
+                labels = c_info.get("Config", {}).get("Labels") or {}
+                state_info = c_info.get("State", {}) or {}
+                status_str = state_info.get("Status", "").lower()
+
+                # Verify ownership label
+                if labels.get("tasklane.component") != "isolated-worker":
+                    # Does not belong to TaskLane isolated worker; DO NOT PRUNE!
+                    continue
+
+                # Check creator PID and running state
+                creator_pid_str = labels.get("tasklane.creator_pid")
+                creator_is_alive = False
+                if creator_pid_str and creator_pid_str.isdigit():
+                    creator_is_alive = _is_pid_alive(int(creator_pid_str))
+
+                # Protect active running containers whose creator is alive
+                if creator_is_alive and status_str == "running":
+                    protected_active.append(cid)
+                    continue
+
+                # Container is confirmed orphaned: attempt bounded removal
+                is_gone, rm_status = cls._remove_docker_container(cid, max_retries=max_retries)
+                if is_gone:
+                    cleaned.append(cid)
+                    with _ACTIVE_SESSIONS_LOCK:
+                        _PENDING_CONTAINERS.discard(cid)
+                else:
+                    if rm_status in ("daemon_inaccessible", "unknown"):
+                        unknown_state.append(cid)
+                    else:
+                        failed.append(cid)
+
+            except (subprocess.TimeoutExpired, OSError):
+                unknown_state.append(cid)
+            except Exception:
+                unknown_state.append(cid)
 
         _sync_pending_containers_to_disk()
 
+        overall_status = "all_cleaned"
+        if failed:
+            overall_status = "removal_failed"
+        elif unknown_state:
+            overall_status = "unknown_state_remain"
+        elif protected_active:
+            overall_status = "active_protected"
+
         return {
-            "recovered_attempted": len(all_targets),
+            "status": overall_status,
+            "recovered_attempted": len(all_candidate_ids),
             "cleaned_count": len(cleaned),
+            "protected_active_count": len(protected_active),
+            "unknown_count": len(unknown_state),
             "failed_count": len(failed),
             "cleaned_containers": cleaned,
+            "protected_containers": protected_active,
+            "unknown_containers": unknown_state,
             "failed_containers": failed,
-            "status": "all_cleaned" if not failed else "pending_resources_remain",
-            "manual_recovery_command": 'docker rm -f $(docker ps -aq --filter "name=tasklane-")',
         }
 
     def __enter__(self) -> "IsolatedWorkerSession":
@@ -878,6 +1018,10 @@ class IsolatedWorkerController:
         cmd = [
             "docker", "run",
             "--name", container_name,
+            "--label", "tasklane.component=isolated-worker",
+            "--label", f"tasklane.session_id={session.session_id}",
+            "--label", f"tasklane.creator_pid={os.getpid()}",
+            "--label", f"tasklane.created_at={int(time.time())}",
             "--rm",
             "--network", "none",
             "--read-only",
@@ -965,6 +1109,10 @@ class IsolatedWorkerController:
         cmd = [
             "docker", "run",
             "--name", container_name,
+            "--label", "tasklane.component=isolated-worker",
+            "--label", f"tasklane.session_id={session.session_id}",
+            "--label", f"tasklane.creator_pid={os.getpid()}",
+            "--label", f"tasklane.created_at={int(time.time())}",
             "--rm",
             "--network", "none",
             "--read-only",

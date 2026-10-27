@@ -1071,7 +1071,7 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                     "automatic_patch_application_enabled": False,
                     "patch_applied": False,
                     "diff": diff_text,
-                    "tests_passed": bool(pytest_passed),
+                    "tests_passed": False,  # Non-authoritative: in-process tests cannot grant independent pass status
                     "tests_passed_advisory": bool(pytest_passed),
                     "independent_validation": False,
                     "authoritative_verified": False,
