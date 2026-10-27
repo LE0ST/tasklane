@@ -1011,6 +1011,33 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                     f"--- Functional Verification (passed={func_passed}) ---\n{func_out}"
                 )
 
+                pytest_evaluation = {
+                    "status": "advisory_passed" if pytest_passed else "failed",
+                    "scope": "in_process_unit_tests",
+                    "trust_level": "advisory_untrusted",
+                    "independent_validation": False,
+                    "limitation": (
+                        "In-process unit test execution shares the Python runtime address space with candidate code. "
+                        "Candidate code can intercept stdout, monkeypatch pytest hooks/reporters, or invoke os._exit(0). "
+                        "Consequently, pytest output is strictly advisory and does NOT constitute independent proof of correctness."
+                    ),
+                    "passed": bool(pytest_passed),
+                }
+
+                persistence_evaluation = {
+                    "status": "db_verified" if func_data.get("db_verified") else "failed",
+                    "scope": "container_tmpfs_sqlite",
+                    "trust_level": "advisory_shared_permission_domain",
+                    "independent_validation": False,
+                    "limitation": (
+                        "Direct querying of /tmp/tasklane.db confirms physical database persistence on disk, "
+                        "preventing superficial in-memory HTTP mocking. However, candidate (uvicorn) and verifier "
+                        "share container user UID 10001 and filesystem permissions on /tmp/tasklane.db; "
+                        "this does not provide independent security isolation."
+                    ),
+                    "persisted": bool(func_data.get("urgent_persisted")),
+                }
+
                 if not (pytest_passed and func_passed):
                     return {
                         "adapter": self.adapter_name,
@@ -1020,8 +1047,14 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                         "error": ERROR_TEST_VERIFICATION_FAILED,
                         "diff": diff_text,
                         "tests_passed": bool(pytest_passed),
+                        "tests_passed_advisory": bool(pytest_passed),
+                        "independent_validation": False,
+                        "authoritative_verified": False,
+                        "pytest_verification": pytest_evaluation,
+                        "persistence_verification": persistence_evaluation,
                         "functional_verified": bool(func_passed),
                         "functional_details": func_data,
+                        "evaluation_boundary": "advisory_shared_domain_untrusted",
                         "workspace": str(safe_ws),
                         "worker_output": worker_output,
                     }
@@ -1039,8 +1072,14 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                     "patch_applied": False,
                     "diff": diff_text,
                     "tests_passed": bool(pytest_passed),
+                    "tests_passed_advisory": bool(pytest_passed),
+                    "independent_validation": False,
+                    "authoritative_verified": False,
+                    "pytest_verification": pytest_evaluation,
+                    "persistence_verification": persistence_evaluation,
                     "functional_verified": bool(func_passed),
                     "functional_details": func_data,
+                    "evaluation_boundary": "advisory_shared_domain_untrusted",
                     "workspace": str(safe_ws),
                     "worker_output": worker_output,
                 }

@@ -304,7 +304,13 @@ def test_deepseek_adapter_repair_withholds_automatic_patch_application(monkeypat
         # Verification in isolated worker passed
         assert res.get("model_executed") is True
         assert res.get("tests_passed") is True
+        assert res.get("tests_passed_advisory") is True
         assert res.get("functional_verified") is True
+        assert res.get("independent_validation") is False
+        assert res.get("pytest_verification", {}).get("status") == "advisory_passed"
+        assert res.get("pytest_verification", {}).get("trust_level") == "advisory_untrusted"
+        assert res.get("persistence_verification", {}).get("status") == "db_verified"
+        assert "advisory" in res.get("pytest_verification", {}).get("limitation", "").lower()
 
         # CRITICAL: Automatic patch application is disabled by policy
         assert res.get("status") == "automatic_patch_application_disabled"

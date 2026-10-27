@@ -26,11 +26,18 @@ CRITICAL ARCHITECTURAL CONSTRAINTS & SECURITY GUARANTEES:
      unforgeable evaluation boundary, automatic application of model-generated patches remains strictly DISABLED.
 5. Strict output budget: stdout/stderr is monitored in real-time with a hard cap (MAX_OUTPUT_BYTES).
    If exceeded, the container is stopped immediately.
-6. Centralized bounded cleanup with retries and recovery registry: Staging directories and containers
-   are tracked and guaranteed to be destroyed on success, failure, timeout, or cancellation.
-   Distinguishes confirmed absence from daemon inaccessibility or persistent container existence.
-   Retains uncleaned containers in a recoverable registry and allows retrying cleanup after failures.
-   Session initialization uses per-path event synchronization to prevent partial visibility across threads.
+6. Centralized bounded cleanup, crash recovery limitations & operator recovery:
+   - In-process session registries and container tracking sets reside in RAM and DO NOT survive
+     abrupt controller process crashes (SIGKILL, power failure, or OOM).
+   - On orderly exit, atexit handlers perform best-effort cleanup; however, if the Docker daemon
+     was unreachable or times out, containers remain on the host.
+   - To assist recovery, pending container IDs are mirrored to a state file on disk
+     (/tmp/tasklane_pending_containers.json), and IsolatedWorkerSession.recover_orphaned_containers()
+     can be invoked once the daemon recovers to discover and prune orphaned containers.
+   - Without an external OS supervisor daemon or watchdog, host cleanup after a process crash with
+     Docker down cannot be guaranteed automatically; operators must run:
+     docker rm -f $(docker ps -aq --filter "name=tasklane-")
+   - Session initialization uses per-path event synchronization to prevent partial visibility across threads.
 7. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
 """
 import atexit
@@ -58,9 +65,37 @@ CLEANUP_TIMEOUT_SECONDS = 5
 _ACTIVE_SESSIONS: Dict[Path, "IsolatedWorkerSession"] = {}
 # Global registry of pending uncleaned container names across sessions
 _PENDING_CONTAINERS: Set[str] = set()
+# Persistent on-disk recovery file for pending container IDs across abrupt exits
+_PENDING_CONTAINERS_STATE_FILE = Path(tempfile.gettempdir()) / "tasklane_pending_containers.json"
 # Per-path synchronization events during session creation to prevent partial visibility
 _SESSION_EVENTS: Dict[Path, threading.Event] = {}
 _ACTIVE_SESSIONS_LOCK = threading.RLock()
+
+
+def _sync_pending_containers_to_disk() -> None:
+    """Best-effort persistence of unremoved container IDs to disk for crash recovery."""
+    try:
+        with _ACTIVE_SESSIONS_LOCK:
+            data = list(_PENDING_CONTAINERS)
+        if data:
+            _PENDING_CONTAINERS_STATE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        elif _PENDING_CONTAINERS_STATE_FILE.exists():
+            _PENDING_CONTAINERS_STATE_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _load_pending_containers_from_disk() -> Set[str]:
+    """Load pending container IDs recorded across previous executions."""
+    try:
+        if _PENDING_CONTAINERS_STATE_FILE.exists():
+            content = _PENDING_CONTAINERS_STATE_FILE.read_text(encoding="utf-8")
+            loaded = json.loads(content)
+            if isinstance(loaded, list):
+                return set(loaded)
+    except Exception:
+        pass
+    return set()
 
 
 def _emergency_cleanup_on_exit():
@@ -86,6 +121,8 @@ def _emergency_cleanup_on_exit():
                     _PENDING_CONTAINERS.discard(container_name)
         except Exception:
             pass
+
+    _sync_pending_containers_to_disk()
 
 
 atexit.register(_emergency_cleanup_on_exit)
@@ -272,6 +309,7 @@ class IsolatedWorkerSession:
             self.active_containers.add(container_name)
             with _ACTIVE_SESSIONS_LOCK:
                 _PENDING_CONTAINERS.add(container_name)
+        _sync_pending_containers_to_disk()
 
     def confirm_container_removed(self, container_name: str, max_retries: int = 3) -> bool:
         """Attempt to stop and remove the container with retries.
@@ -286,12 +324,14 @@ class IsolatedWorkerSession:
                 self.pending_cleanup_containers.discard(container_name)
                 with _ACTIVE_SESSIONS_LOCK:
                     _PENDING_CONTAINERS.discard(container_name)
+                _sync_pending_containers_to_disk()
                 return True
             else:
                 self.active_containers.add(container_name)
                 self.pending_cleanup_containers.add(container_name)
                 with _ACTIVE_SESSIONS_LOCK:
                     _PENDING_CONTAINERS.add(container_name)
+                _sync_pending_containers_to_disk()
                 return False
 
     @classmethod
@@ -397,7 +437,67 @@ class IsolatedWorkerSession:
             with _ACTIVE_SESSIONS_LOCK:
                 _ACTIVE_SESSIONS.pop(self.staging_dir.resolve(), None)
 
+        _sync_pending_containers_to_disk()
         return fully_cleaned
+
+    @classmethod
+    def recover_orphaned_containers(cls, max_retries: int = 3) -> Dict[str, Any]:
+        """Recover and attempt to remove any orphaned containers remaining from previous executions.
+
+        RECOVERY MECHANISM & LIMITATIONS:
+        - In-memory registries do not survive controller crashes, SIGKILL (kill -9), or ungraceful exits.
+        - This helper inspects both the persistent on-disk state file (_PENDING_CONTAINERS_STATE_FILE)
+          and queries the host Docker daemon for containers with names matching 'tasklane-'.
+        - If the Docker daemon is accessible, it removes all discovered orphaned containers with retries.
+        - If the Docker daemon remains inaccessible, unremoved containers are preserved in the state file.
+        - Manual operator fallback: `docker rm -f $(docker ps -aq --filter "name=tasklane-")`
+        """
+        all_targets: Set[str] = set()
+        all_targets.update(_load_pending_containers_from_disk())
+        with _ACTIVE_SESSIONS_LOCK:
+            all_targets.update(_PENDING_CONTAINERS)
+
+        try:
+            res = subprocess.run(
+                ["docker", "ps", "-aq", "--filter", "name=tasklane-"],
+                capture_output=True,
+                text=True,
+                timeout=CLEANUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    cid = line.strip()
+                    if cid:
+                        all_targets.add(cid)
+        except Exception:
+            pass
+
+        cleaned: List[str] = []
+        failed: List[str] = []
+
+        for cid in list(all_targets):
+            is_gone, _ = cls._remove_docker_container(cid, max_retries=max_retries)
+            if is_gone:
+                cleaned.append(cid)
+                with _ACTIVE_SESSIONS_LOCK:
+                    _PENDING_CONTAINERS.discard(cid)
+            else:
+                failed.append(cid)
+                with _ACTIVE_SESSIONS_LOCK:
+                    _PENDING_CONTAINERS.add(cid)
+
+        _sync_pending_containers_to_disk()
+
+        return {
+            "recovered_attempted": len(all_targets),
+            "cleaned_count": len(cleaned),
+            "failed_count": len(failed),
+            "cleaned_containers": cleaned,
+            "failed_containers": failed,
+            "status": "all_cleaned" if not failed else "pending_resources_remain",
+            "manual_recovery_command": 'docker rm -f $(docker ps -aq --filter "name=tasklane-")',
+        }
 
     def __enter__(self) -> "IsolatedWorkerSession":
         return self
