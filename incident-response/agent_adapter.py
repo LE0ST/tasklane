@@ -995,6 +995,9 @@ class DeepSeekAgentAdapter(BaseAgentAdapter):
                 candidate_target = session.staging_dir / "backend" / "main.py"
                 candidate_target.parent.mkdir(parents=True, exist_ok=True)
                 atomic_write_file(candidate_target, repaired_content)
+                if os.name != "nt":
+                    # Atomic replacement creates mode 0600; the isolated UID must read this staged candidate.
+                    candidate_target.chmod(0o644)
 
                 # Step 1: Execute pytest separately against backend unit tests
                 pytest_passed, pytest_out = IsolatedWorkerController.run_isolated_pytest(

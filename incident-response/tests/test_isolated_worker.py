@@ -790,3 +790,44 @@ def test_worker_can_read_allowlisted_staging_files_as_unprivileged_user(tmp_path
                "-c", "from pathlib import Path; [Path(p).read_bytes() for p in ('/workspace/backend/main.py', '/workspace/backend/tests/test_api.py')]"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
         assert result.returncode == 0, result.stderr
+
+
+def test_staged_candidate_remains_readable_after_atomic_replacement(monkeypatch):
+    """The model candidate must be readable by the worker after atomic replacement on Linux."""
+    import stat
+    import subprocess
+    from model_drill import generate_synthetic_remediation_diff
+    from sandbox import create_disposable_workspace, cleanup_disposable_workspace
+    from fixtures import get_target_file
+
+    repo_root = Path(__file__).resolve().parents[2]
+    ws = create_disposable_workspace(repo_root, incident_id="candidate-readability")
+    try:
+        inject_task_creation_defect(ws)
+        diff = generate_synthetic_remediation_diff(get_target_file(ws).read_text(encoding="utf-8"))
+        adapter = DeepSeekAgentAdapter(api_key="dummy-test-key")
+        adapter.write_capable_enabled = True
+        monkeypatch.setattr(adapter, "_call_api", lambda **kwargs: (diff, None))
+        monkeypatch.setattr("agent_adapter.is_isolated_worker_available", lambda: True)
+        def inspect_candidate(session, timeout):
+            target = session.staging_dir / "backend" / "main.py"
+            if os.name != "nt":
+                assert stat.S_IMODE(target.stat().st_mode) == 0o644
+            image = IsolatedWorkerController.get_immutable_image_id()
+            mount = str(session.staging_dir.resolve()).replace("\\", "/")
+            result = subprocess.run([
+                "docker", "run", "--rm", "--network", "none", "--read-only", "--user", "10001:10001",
+                "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "none",
+                "-v", f"{mount}:/workspace:ro", "--entrypoint", "python", image,
+                "-c", "from pathlib import Path; Path('/workspace/backend/main.py').read_bytes()",
+            ], capture_output=True, text=True, timeout=30, check=False)
+            assert result.returncode == 0, result.stderr
+            return True, "stubbed advisory pytest"
+        monkeypatch.setattr(IsolatedWorkerController, "run_isolated_pytest", inspect_candidate)
+        monkeypatch.setattr(IsolatedWorkerController, "run_isolated_functional_verification", lambda *args, **kwargs: (
+            True, {"db_verified": True, "urgent_persisted": True}, "stubbed functional verification"))
+        result = adapter.repair({}, workspace_path=ws, operator_approved=True)
+        assert result["status"] == "automatic_patch_application_disabled"
+        assert result["patch_applied"] is False
+    finally:
+        cleanup_disposable_workspace(ws, "candidate-readability")
