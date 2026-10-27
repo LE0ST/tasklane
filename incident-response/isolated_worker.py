@@ -11,19 +11,27 @@ CRITICAL ARCHITECTURAL CONSTRAINTS & SECURITY GUARANTEES:
    - Resources: CPU bound (--cpus=1.0), memory bound (--memory=512m, --memory-swap=512m), pids bound (--pids-limit=100).
    - Capabilities: --cap-drop ALL, --security-opt no-new-privileges.
    - Logs: container logging disabled or strictly bounded (--log-driver none).
-4. Process separation: Candidate code executes in its own isolated process (e.g. uvicorn);
-   the trusted verifier executes in a separate process that does NOT import candidate code.
-   The candidate cannot forge success tokens, nonces, or stdout markers.
-5. Independent persistence verification: SQLite database file (/tmp/tasklane.db) is queried directly
-   to confirm physical persistence, rather than trusting candidate application HTTP responses.
-6. Untrusted exit detection: Pytest verification requires a genuine test completion summary and non-zero
-   passed tests. Early exits (e.g. os._exit(0)) or empty outputs with return code 0 are rejected as untrusted.
-7. Strict output budget: stdout/stderr is monitored in real-time with a hard cap (MAX_OUTPUT_BYTES).
+4. Process separation vs shared permissions: Candidate code executes in its own isolated process
+   (uvicorn); the trusted verifier executes in a separate process that does NOT import candidate code.
+   - Persistence verification: Querying SQLite /tmp/tasklane.db directly proves physical database disk
+     persistence beyond superficial in-memory web responses.
+   - Critical evaluation boundary limitation: Candidate and verifier share the same container user
+     (uid 10001, gid 10001) and filesystem permissions on /tmp/tasklane.db. This demonstrates schema
+     persistence but does NOT provide independent security isolation against a candidate with shared write permissions.
+   - Unit test boundary limitation: When pytest imports candidate code in-process, candidate code shares
+     memory and standard streams. It can forge stdout lines (e.g. '1 passed') or call os._exit(0).
+     Therefore, in-process test results, stdout, counters, or XML summaries cannot serve as independent
+     proof of correctness and are classified as ADVISORY and UNTRUSTED.
+   - Automatic patch application policy: Because shared permissions and in-process testing lack an
+     unforgeable evaluation boundary, automatic application of model-generated patches remains strictly DISABLED.
+5. Strict output budget: stdout/stderr is monitored in real-time with a hard cap (MAX_OUTPUT_BYTES).
    If exceeded, the container is stopped immediately.
-8. Centralized bounded cleanup with retries: Staging directories and containers are tracked and guaranteed
-   to be destroyed on success, failure, timeout, or cancellation, with bounded cleanup timeouts and retries.
-   Emergency exit handler takes snapshot under lock to eliminate deadlocks.
-9. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
+6. Centralized bounded cleanup with retries and recovery registry: Staging directories and containers
+   are tracked and guaranteed to be destroyed on success, failure, timeout, or cancellation.
+   Distinguishes confirmed absence from daemon inaccessibility or persistent container existence.
+   Retains uncleaned containers in a recoverable registry and allows retrying cleanup after failures.
+   Session initialization uses per-path event synchronization to prevent partial visibility across threads.
+7. Immutable identity: Containers run using the immutable image ID (sha256 digest), not a floating tag.
 """
 import atexit
 import json
@@ -48,19 +56,34 @@ CLEANUP_TIMEOUT_SECONDS = 5
 
 # Global registry of active sessions keyed by resolved staging path
 _ACTIVE_SESSIONS: Dict[Path, "IsolatedWorkerSession"] = {}
-_ACTIVE_SESSIONS_LOCK = threading.Lock()
+# Global registry of pending uncleaned container names across sessions
+_PENDING_CONTAINERS: Set[str] = set()
+# Per-path synchronization events during session creation to prevent partial visibility
+_SESSION_EVENTS: Dict[Path, threading.Event] = {}
+_ACTIVE_SESSIONS_LOCK = threading.RLock()
 
 
 def _emergency_cleanup_on_exit():
     """Ensure any orphaned containers and staging directories are pruned at process termination.
     Takes a snapshot of active sessions under lock and releases the lock before cleanup to prevent deadlocks.
+    Also cleans up any globally tracked pending containers.
     """
     with _ACTIVE_SESSIONS_LOCK:
         sessions_snapshot = list(_ACTIVE_SESSIONS.values())
+        orphaned_containers = list(_PENDING_CONTAINERS)
 
     for session in sessions_snapshot:
         try:
             session.cleanup()
+        except Exception:
+            pass
+
+    for container_name in orphaned_containers:
+        try:
+            is_gone, _ = IsolatedWorkerSession._remove_docker_container(container_name, max_retries=2)
+            if is_gone:
+                with _ACTIVE_SESSIONS_LOCK:
+                    _PENDING_CONTAINERS.discard(container_name)
         except Exception:
             pass
 
@@ -81,26 +104,57 @@ class OutputBudgetExceededError(Exception):
 class IsolatedWorkerSession:
     """Manages the full lifecycle of an isolated staging directory and associated worker containers.
     Centralizes creation, container tracking, and bounded cleanup across success, error, timeout, and cancellation.
-    Eliminates duplicate sessions by reusing existing instances for the same staging directory.
+    Eliminates duplicate sessions and guarantees that no partially initialized instance is visible to any other thread.
     """
 
-    def __new__(cls, staging_dir: Path):
+    def __new__(cls, staging_dir: Path, *args, **kwargs):
+        resolved = staging_dir.resolve()
+        while True:
+            with _ACTIVE_SESSIONS_LOCK:
+                if resolved in _ACTIVE_SESSIONS:
+                    existing = _ACTIVE_SESSIONS[resolved]
+                    if getattr(existing, "_initialized", False):
+                        return existing
+
+                if resolved in _SESSION_EVENTS:
+                    wait_event = _SESSION_EVENTS[resolved]
+                else:
+                    # Current thread becomes the creator/initializer for this staging directory
+                    _SESSION_EVENTS[resolved] = threading.Event()
+                    instance = super().__new__(cls)
+                    instance._initialized = False
+                    return instance
+
+            # Wait outside the lock until the initializing thread completes
+            if wait_event:
+                wait_event.wait(timeout=30)
+
+    def __init__(self, staging_dir: Path, _test_pause_hook=None):
         resolved = staging_dir.resolve()
         with _ACTIVE_SESSIONS_LOCK:
-            if resolved in _ACTIVE_SESSIONS:
-                return _ACTIVE_SESSIONS[resolved]
-            instance = super().__new__(cls)
-            _ACTIVE_SESSIONS[resolved] = instance
-            return instance
+            if getattr(self, "_initialized", False):
+                return
 
-    def __init__(self, staging_dir: Path):
-        if getattr(self, "_initialized", False):
-            return
-        self._initialized = True
-        self.staging_dir = staging_dir
-        self.active_containers: Set[str] = set()
-        self._lock = threading.Lock()
-        self._cleaned = False
+        try:
+            # If a test hook is provided, execute it to simulate controlled pause before completion
+            if _test_pause_hook:
+                _test_pause_hook()
+
+            self.staging_dir = resolved
+            self.active_containers: Set[str] = set()
+            self.pending_cleanup_containers: Set[str] = set()
+            self._lock = threading.RLock()
+            self._cleaned = False
+            self._initialized = True
+
+            # ONLY expose to _ACTIVE_SESSIONS once completely initialized
+            with _ACTIVE_SESSIONS_LOCK:
+                _ACTIVE_SESSIONS[resolved] = self
+        finally:
+            with _ACTIVE_SESSIONS_LOCK:
+                ev = _SESSION_EVENTS.pop(resolved, None)
+                if ev:
+                    ev.set()
 
     @classmethod
     def create(
@@ -213,23 +267,45 @@ class IsolatedWorkerSession:
             raise SecurityError(f"Symlink detected at destination after copy: {dest_file}")
 
     def register_container(self, container_name: str) -> None:
-        """Register an active container for tracking and bounded cleanup."""
+        """Register an active container for tracking, recovery, and bounded cleanup."""
         with self._lock:
             self.active_containers.add(container_name)
+            with _ACTIVE_SESSIONS_LOCK:
+                _PENDING_CONTAINERS.add(container_name)
 
     def confirm_container_removed(self, container_name: str, max_retries: int = 3) -> bool:
         """Attempt to stop and remove the container with retries.
+        Distinguishes confirmed absence from daemon inaccessibility or persistent existence on host.
         Only unregisters the container once its removal is verified.
+        Pending/unconfirmed containers are preserved in active_containers and pending_cleanup_containers.
         """
-        removed = self._remove_docker_container(container_name, max_retries=max_retries)
-        if removed:
-            with self._lock:
+        is_gone, status = self._remove_docker_container(container_name, max_retries=max_retries)
+        with self._lock:
+            if is_gone:
                 self.active_containers.discard(container_name)
-        return removed
+                self.pending_cleanup_containers.discard(container_name)
+                with _ACTIVE_SESSIONS_LOCK:
+                    _PENDING_CONTAINERS.discard(container_name)
+                return True
+            else:
+                self.active_containers.add(container_name)
+                self.pending_cleanup_containers.add(container_name)
+                with _ACTIVE_SESSIONS_LOCK:
+                    _PENDING_CONTAINERS.add(container_name)
+                return False
 
     @classmethod
-    def _remove_docker_container(cls, container_name: str, max_retries: int = 3) -> bool:
-        """Execute docker rm -f with bounded timeouts and retries on failure or timeout."""
+    def _remove_docker_container(cls, container_name: str, max_retries: int = 3) -> Tuple[bool, str]:
+        """Execute docker rm -f with bounded timeouts and retries on failure or timeout.
+        Returns (is_gone, status).
+        Statuses:
+        - "removed": docker rm succeeded (returncode 0).
+        - "absent": container confirmed not found ("No such container").
+        - "still_exists": docker rm failed and inspect confirmed container still exists on host.
+        - "daemon_inaccessible": docker daemon down, unreachable, timeout, or connection error.
+        - "unknown": removal failed with unrecognized state.
+        Only "removed" and "absent" confirm that the container does not exist.
+        """
         for attempt in range(max_retries):
             try:
                 res = subprocess.run(
@@ -239,16 +315,25 @@ class IsolatedWorkerSession:
                     check=False,
                 )
                 if res.returncode == 0:
-                    return True
+                    return True, "removed"
                 stderr_text = res.stderr.decode("utf-8", errors="replace") if isinstance(res.stderr, bytes) else str(res.stderr)
-                if "No such container" in stderr_text or "not found" in stderr_text.lower():
-                    return True
+                lower_err = stderr_text.lower()
+                if "no such container" in lower_err:
+                    return True, "absent"
+                if (
+                    "cannot connect to the docker daemon" in lower_err
+                    or "is the docker daemon running" in lower_err
+                    or "daemon unreachable" in lower_err
+                    or "connection refused" in lower_err
+                ):
+                    return False, "daemon_inaccessible"
             except (subprocess.TimeoutExpired, OSError):
-                pass
+                if attempt == max_retries - 1:
+                    return False, "daemon_inaccessible"
             if attempt < max_retries - 1:
                 time.sleep(0.3)
 
-        # Final inspect check: verify container no longer exists
+        # Retries exhausted: inspect to distinguish presence from daemon error
         try:
             inspect_res = subprocess.run(
                 ["docker", "container", "inspect", container_name],
@@ -256,33 +341,63 @@ class IsolatedWorkerSession:
                 timeout=CLEANUP_TIMEOUT_SECONDS,
                 check=False,
             )
-            return inspect_res.returncode != 0
-        except Exception:
-            return False
+            inspect_err = inspect_res.stderr.decode("utf-8", errors="replace") if isinstance(inspect_res.stderr, bytes) else str(inspect_res.stderr)
+            inspect_lower = inspect_err.lower()
 
-    def cleanup(self) -> None:
+            if inspect_res.returncode == 0:
+                # Inspect succeeded: container is definitely still present on host
+                return False, "still_exists"
+
+            if "no such container" in inspect_lower:
+                return True, "absent"
+
+            if (
+                "cannot connect to the docker daemon" in inspect_lower
+                or "is the docker daemon running" in inspect_lower
+                or "daemon unreachable" in inspect_lower
+                or "connection refused" in inspect_lower
+            ):
+                return False, "daemon_inaccessible"
+
+            return False, "unknown"
+        except (subprocess.TimeoutExpired, OSError):
+            return False, "daemon_inaccessible"
+        except Exception:
+            return False, "unknown"
+
+    def cleanup(self) -> bool:
         """Centralized bounded cleanup for all associated containers and staging files.
-        Executes with bounded timeouts and retries to prevent hanging.
+        Retries cleanup of all active and pending containers.
+        Allows subsequent retries if daemon was temporarily unreachable or removal failed.
+        Returns True only if all resources (containers and staging dir) were successfully cleaned up.
         """
         with self._lock:
-            if self._cleaned:
-                return
-            self._cleaned = True
-            containers_to_clean = list(self.active_containers)
+            containers_to_clean = list(self.active_containers | self.pending_cleanup_containers)
 
-        # 1. Stop and remove all registered active containers with retries
+        all_containers_cleaned = True
         for container_name in containers_to_clean:
-            self.confirm_container_removed(container_name, max_retries=3)
+            removed = self.confirm_container_removed(container_name, max_retries=3)
+            if not removed:
+                all_containers_cleaned = False
 
-        # 2. Remove staging directory
+        # Attempt to remove staging directory
+        staging_dir_cleaned = True
         if self.staging_dir and self.staging_dir.exists():
             try:
-                shutil.rmtree(self.staging_dir, ignore_errors=True)
+                shutil.rmtree(self.staging_dir, ignore_errors=False)
             except Exception:
-                pass
+                if self.staging_dir.exists():
+                    staging_dir_cleaned = False
 
-        with _ACTIVE_SESSIONS_LOCK:
-            _ACTIVE_SESSIONS.pop(self.staging_dir.resolve(), None)
+        fully_cleaned = all_containers_cleaned and staging_dir_cleaned
+        with self._lock:
+            self._cleaned = fully_cleaned
+
+        if fully_cleaned:
+            with _ACTIVE_SESSIONS_LOCK:
+                _ACTIVE_SESSIONS.pop(self.staging_dir.resolve(), None)
+
+        return fully_cleaned
 
     def __enter__(self) -> "IsolatedWorkerSession":
         return self
@@ -638,7 +753,18 @@ class IsolatedWorkerController:
         timeout: int = WORKER_TIMEOUT_SECONDS,
     ) -> Tuple[bool, str]:
         """Step 1: Execute pytest against backend unit tests in the isolated container.
-        Validates both return code and presence of trusted pytest execution summary.
+        Validates return code and presence of standard pytest execution summary.
+
+        CRITICAL EVALUATION BOUNDARY LIMITATION:
+        Unit tests running under pytest inherently import and execute candidate code inside
+        the test runner's process memory space. Candidate code can intercept stdout, monkeypatch
+        sys.modules, override pytest hooks/reporters, forge summary lines (e.g. '1 passed'),
+        or invoke os._exit(0).
+        Consequently, in-process test execution, stdout markers, XML reports, or return codes
+        CANNOT serve as an independent, tamper-proof proof of correctness against adversarial code.
+        This step is strictly ADVISORY, UNTRUSTED, and NON-AUTHORITATIVE. Automatic patch application
+        remains disabled by policy.
+
         Detects premature exit or empty output even if returncode is 0.
         Returns (pytest_passed, bounded_output).
         """
@@ -711,8 +837,23 @@ class IsolatedWorkerController:
     ) -> Tuple[bool, Dict[str, Any], str]:
         """Step 2: Execute separate functional verification: candidate runs under uvicorn;
         the trusted verifier executes in an independent process querying over TCP loopback
-        and verifying persistence directly in SQLite /tmp/tasklane.db.
-        Candidate cannot forge success tokens, nonces, or pretend persistence.
+        and confirming persistence directly in SQLite /tmp/tasklane.db.
+
+        SCOPE & LIMITATIONS OF SQLITE PERSISTENCE VERIFICATION:
+        1. What it demonstrates:
+           Direct querying of /tmp/tasklane.db confirms that records were physically written to
+           the SQLite database file on disk, preventing superficial in-memory HTTP mocking.
+        2. Shared Permission Boundary:
+           Both the candidate process (uvicorn) and the verifier execute under the same container
+           user identity (10001:10001) and share read-write permissions to /tmp and /tmp/tasklane.db.
+           Because they share filesystem permissions, this does NOT constitute independent security
+           isolation between the candidate and the persistence engine.
+        3. Policy Guarantee:
+           Because in-process unit tests and shared filesystem permissions lack a tamper-proof
+           evaluation boundary, automatic application of model-generated patches remains strictly
+           DISABLED.
+
+        Returns (functional_passed, parsed_data, bounded_output).
         """
         image_id = cls.get_immutable_image_id()
         if not image_id:

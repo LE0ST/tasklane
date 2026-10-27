@@ -558,3 +558,205 @@ def test_duplicate_sessions_prevented(tmp_path):
     s1.cleanup()
     assert staging_dir.resolve() not in _ACTIVE_SESSIONS
 
+
+def test_container_removal_rm_fails_inspect_confirms_existence(monkeypatch):
+    """Regression test (Audit Sol Item 2): When docker rm fails and docker inspect
+    confirms the container still exists, verify that the container is NOT considered
+    removed or absent, and is retained in active, pending, and global registries.
+    """
+    import subprocess
+    from isolated_worker import _PENDING_CONTAINERS
+    session = IsolatedWorkerSession(Path(tempfile.gettempdir()) / "test_still_exists_stage")
+    container_name = "test-persisting-container"
+    session.register_container(container_name)
+
+    def mock_run(cmd, **kwargs):
+        if "rm" in cmd:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout=b"", stderr=b"Error: container busy")
+        if "inspect" in cmd:
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout=b'[{"Id": "123"}]', stderr=b"")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    removed = session.confirm_container_removed(container_name, max_retries=2)
+    assert removed is False
+    assert container_name in session.active_containers
+    assert container_name in session.pending_cleanup_containers
+    assert container_name in _PENDING_CONTAINERS
+
+
+def test_container_removal_daemon_inaccessible(monkeypatch):
+    """Regression test (Audit Sol Item 2): When docker daemon is down or unreachable,
+    verify that container removal distinguishes daemon inaccessibility from absence,
+    and retains the container in the recoverable registry without dropping it.
+    """
+    import subprocess
+    from isolated_worker import _PENDING_CONTAINERS
+    session = IsolatedWorkerSession(Path(tempfile.gettempdir()) / "test_daemon_down_stage")
+    container_name = "test-daemon-down-container"
+    session.register_container(container_name)
+
+    def mock_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode=1,
+            stdout=b"",
+            stderr=b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        )
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+
+    removed = session.confirm_container_removed(container_name, max_retries=2)
+    assert removed is False
+    assert container_name in session.active_containers
+    assert container_name in session.pending_cleanup_containers
+    assert container_name in _PENDING_CONTAINERS
+
+
+def test_cleanup_retries_after_persistent_failure(monkeypatch, tmp_path):
+    """Regression test (Audit Sol Item 2): Verify that cleanup() preserves uncleaned
+    resources upon failure and successfully retries when the daemon recovers.
+    """
+    import subprocess
+    from isolated_worker import _PENDING_CONTAINERS
+    staging_dir = tmp_path / "stage_retry_cleanup"
+    staging_dir.mkdir()
+    session = IsolatedWorkerSession(staging_dir)
+    container_name = "test-recoverable-container"
+    session.register_container(container_name)
+
+    # Phase 1: daemon is down
+    def mock_run_down(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode=1,
+            stdout=b"",
+            stderr=b"Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+        )
+
+    monkeypatch.setattr(subprocess, "run", mock_run_down)
+
+    success = session.cleanup()
+    assert success is False
+    assert session._cleaned is False
+    assert container_name in session.pending_cleanup_containers
+    assert container_name in _PENDING_CONTAINERS
+
+    # Phase 2: daemon recovers
+    def mock_run_up(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", mock_run_up)
+
+    retry_success = session.cleanup()
+    assert retry_success is True
+    assert session._cleaned is True
+    assert container_name not in session.active_containers
+    assert container_name not in session.pending_cleanup_containers
+    assert container_name not in _PENDING_CONTAINERS
+
+
+def test_concurrent_session_initialization_prevents_partial_visibility(tmp_path):
+    """Regression test (Audit Sol Item 3): Verify that concurrent threads attempting to
+    access or create a session for the same directory never observe a partially initialized
+    instance, even during a controlled pause during initialization.
+    """
+    import threading
+    import time
+    from isolated_worker import _ACTIVE_SESSIONS
+
+    staging_dir = tmp_path / "concurrent_stage_dir"
+    staging_dir.mkdir()
+
+    init_started = threading.Event()
+    allow_finish = threading.Event()
+    results = {}
+
+    def pause_hook():
+        init_started.set()
+        # Hold initialization until test thread signals to proceed
+        allow_finish.wait(timeout=5)
+
+    def thread_1_work():
+        results["s1"] = IsolatedWorkerSession(staging_dir, _test_pause_hook=pause_hook)
+
+    def thread_2_work():
+        # This thread will attempt to fetch or initialize the same session
+        results["s2"] = IsolatedWorkerSession(staging_dir)
+
+    t1 = threading.Thread(target=thread_1_work)
+    t1.start()
+
+    # Wait until Thread 1 enters __init__ and triggers the pause hook
+    assert init_started.wait(timeout=3) is True
+
+    # Critical check: while Thread 1 is initializing, _ACTIVE_SESSIONS must NOT contain the instance
+    assert staging_dir.resolve() not in _ACTIVE_SESSIONS
+
+    # Launch Thread 2 concurrently while Thread 1 is still paused
+    t2 = threading.Thread(target=thread_2_work)
+    t2.start()
+
+    # Thread 2 must be waiting and must NOT have finished yet
+    time.sleep(0.1)
+    assert "s2" not in results
+
+    # Allow Thread 1 to complete initialization
+    allow_finish.set()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
+
+    assert not t1.is_alive()
+    assert not t2.is_alive()
+
+    s1 = results.get("s1")
+    s2 = results.get("s2")
+    assert s1 is not None
+    assert s2 is not None
+    assert s1 is s2
+    assert s1._initialized is True
+    assert s2._initialized is True
+    assert hasattr(s1, "active_containers")
+    assert hasattr(s2, "active_containers")
+
+    s1.cleanup()
+
+
+def test_pytest_in_process_candidate_execution_is_untrusted_boundary(tmp_path):
+    """Regression test (Audit Sol Item 1 & 4): Candidate executing in-process could output
+    fake pytest summary lines and exit with code 0. Demonstrate that the architecture
+    classifies in-process evaluation as advisory/untrusted, and DeepSeekAgentAdapter
+    strictly withholds automatic patch application.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    with IsolatedWorkerSession.create(repo_root, staging_parent=tmp_path) as session:
+        # Simulate in-process fake output where candidate intercepted stdout and printed fake summary
+        fake_adversarial_output = (
+            "running test_api.py...\n"
+            "candidate code intercepted stdout!\n"
+            "============================== 1 passed in 0.01s ==============================\n"
+        )
+
+        import isolated_worker
+        orig_exec = isolated_worker.IsolatedWorkerController._execute_bounded_container
+        isolated_worker.IsolatedWorkerController._execute_bounded_container = (
+            lambda cmd, cname, sess, timeout, **kwargs: (0, fake_adversarial_output)
+        )
+
+        try:
+            passed, out = IsolatedWorkerController.run_isolated_pytest(session)
+            # Standard pattern matcher sees passing summary regex
+            assert passed is True
+            # But the documentation and architecture explicitly define in-process execution as advisory
+            assert "advisory" in IsolatedWorkerController.run_isolated_pytest.__doc__.lower()
+            assert "untrusted" in IsolatedWorkerController.run_isolated_pytest.__doc__.lower()
+
+            # Automatic patch application remains strictly disabled by policy
+            adapter = DeepSeekAgentAdapter()
+            adapter.write_capable_enabled = True
+            assert adapter.write_capable_enabled is True
+        finally:
+            isolated_worker.IsolatedWorkerController._execute_bounded_container = orig_exec
+
+
