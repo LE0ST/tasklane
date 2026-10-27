@@ -273,3 +273,65 @@ def test_automatic_container_recovery_is_disabled(monkeypatch, tmp_path):
     assert report["status"] == "automatic_recovery_disabled"
     assert report["unknown_count"] > 0
     assert state_file.read_text(encoding="utf-8") == "{corrupt"
+
+
+@pytest.mark.parametrize("after_exit, expected_success", [(1, False), (0, True)])
+def test_after_requires_successful_worker_exit(monkeypatch, tmp_path, after_exit, expected_success):
+    """Exercise the real functional parser with apparent success and varied exit codes."""
+    from isolated_worker import IsolatedWorkerController
+    from agent_adapter import DeepSeekAgentAdapter
+
+    session = MagicMock()
+    session.staging_dir = tmp_path
+    session.session_id = "test-session"
+    context = MagicMock()
+    context.__enter__.return_value = session
+    monkeypatch.setattr(IsolatedWorkerSession, "create", lambda *args, **kwargs: context)
+    monkeypatch.setattr(IsolatedWorkerController, "get_immutable_image_id", lambda: "sha256:stub")
+    before = {"normal_status": 201, "urgent_status": 500}
+    after = {"normal_status": 201, "urgent_status": 201, "urgent_persisted": True, "db_verified": True}
+    calls = []
+    def fake_container(cmd, container_name, session, timeout):
+        calls.append(container_name)
+        data = before if len(calls) == 1 else after
+        code = 0 if len(calls) == 1 else after_exit
+        return code, "TRUSTED_VERIFIER_JSON:" + json.dumps(data)
+    monkeypatch.setattr(IsolatedWorkerController, "_execute_bounded_container", fake_container)
+    monkeypatch.setattr(DeepSeekAgentAdapter, "repair", lambda *args, **kwargs: {
+        "status": "automatic_patch_application_disabled", "patch_applied": False,
+        "automatic_patch_application_enabled": False, "independent_validation": False,
+    })
+    result = run_controlled_model_drill(incident_id=f"after-exit-{after_exit}", review_callback=lambda proposal: True)
+    assert len(calls) == 2
+    assert result["success"] is expected_success
+    stage = result["stages"]["stage_5_after_http"]
+    assert stage["functional_passed"] is expected_success
+    assert stage["status"] == ("passed" if expected_success else "failed")
+    assert stage["urgent_status"] == 201
+    if not expected_success:
+        assert "worker" in stage["detail"].lower()
+
+
+def test_after_is_not_reported_when_review_is_withheld(monkeypatch, tmp_path):
+    """The drill must not claim an AFTER result when no second worker was run."""
+    from isolated_worker import IsolatedWorkerController
+    from agent_adapter import DeepSeekAgentAdapter
+
+    session = MagicMock(staging_dir=tmp_path, session_id="test-session")
+    context = MagicMock()
+    context.__enter__.return_value = session
+    monkeypatch.setattr(IsolatedWorkerSession, "create", lambda *args, **kwargs: context)
+    monkeypatch.setattr(IsolatedWorkerController, "get_immutable_image_id", lambda: "sha256:stub")
+    calls = []
+    def fake_container(cmd, container_name, session, timeout):
+        calls.append(container_name)
+        return 0, 'TRUSTED_VERIFIER_JSON:{"normal_status": 201, "urgent_status": 500}'
+    monkeypatch.setattr(IsolatedWorkerController, "_execute_bounded_container", fake_container)
+    monkeypatch.setattr(DeepSeekAgentAdapter, "repair", lambda *args, **kwargs: {
+        "status": "automatic_patch_application_disabled", "patch_applied": False,
+        "automatic_patch_application_enabled": False, "independent_validation": False,
+    })
+    result = run_controlled_model_drill(incident_id="after-not-run")
+    assert len(calls) == 1
+    assert result["success"] is False
+    assert result["stages"]["stage_5_after_http"] == {"status": "not_run"}

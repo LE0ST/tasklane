@@ -401,10 +401,17 @@ def run_controlled_model_drill(
             with IsolatedWorkerSession.create(ws) as after_session:
                 func_passed, after_http, _ = IsolatedWorkerController.run_isolated_functional_verification(after_session)
 
-            assert after_http.get("normal_status") == 201, "Normal task must return 201 after repair"
-            assert after_http.get("urgent_status") == 201, "Urgent task must return 201 after repair"
-            assert after_http.get("urgent_persisted") is True, "Urgent task must be persisted in SQLite"
-            overall_success = True
+            overall_success = func_passed is True
+            after_http = {
+                **after_http,
+                "status": "passed" if overall_success else "failed",
+                "functional_passed": overall_success,
+            }
+            if not overall_success:
+                after_http["detail"] = (
+                    "AFTER worker verification failed; its exit status or functional checks "
+                    "did not pass. Parsed observations alone do not establish recovery."
+                )
         else:
             after_http = {"status": "not_run"}
             overall_success = False
