@@ -1,10 +1,10 @@
 """TaskLane Issue #4: Controlled Local Demonstration for Model Remediation Agent.
 
 Orchestrates the 5-stage controlled local demonstration workflow:
-1. Alert receipt & read-only telemetry diagnosis (DeepSeekAgentAdapter.diagnose).
+1. Simulated alert context and simulated read-only diagnosis.
 2. Defect injection strictly in service-owned disposable workspace & BEFORE verification (HTTP 500)
    executed STRICTLY INSIDE isolated worker container (Zero host candidate execution).
-3. Candidate diff proposal & isolated worker evaluation:
+3. Offline synthetic or explicit live-provider diff proposal & isolated worker evaluation:
    - Evaluated in ephemeral container (tasklane-isolated-worker:local).
    - In-process pytest and SQLite persistence reported with explicit advisory limitations.
    - Automatic patch application is strictly DISABLED by policy (workspace target file remains untouched).
@@ -18,6 +18,7 @@ Orchestrates the 5-stage controlled local demonstration workflow:
    - Urgent task creation succeeds with HTTP 201.
    - Database persistence confirmed in SQLite.
 """
+import argparse
 import difflib
 import hashlib
 import json
@@ -114,8 +115,10 @@ def create_remediation_proposal(
     """Generate a candidate remediation proposal and advisory worker evaluation.
     Target file in the workspace remains untouched.
     """
-    if mode != MODE_OFFLINE_SIMULATED:
-        raise PermissionError("Live provider remediation blocked")
+    if mode not in (MODE_OFFLINE_SIMULATED, MODE_LIVE_PROVIDER):
+        raise ValueError("Unknown drill mode")
+    if mode == MODE_LIVE_PROVIDER and simulated_diff is not None:
+        raise ValueError("A simulated diff cannot be used in live provider mode")
     _reject_workspace_links(Path(workspace_path))
     if not is_active_workspace_registration(incident_id, Path(workspace_path)):
         raise PermissionError("Active workspace registration required")
@@ -128,34 +131,32 @@ def create_remediation_proposal(
     original_bytes = target_file.read_bytes()
     original_file_sha256 = hashlib.sha256(original_bytes).hexdigest()
 
-    # In MODE_OFFLINE_SIMULATED:
-    diff_text = simulated_diff or generate_synthetic_remediation_diff(original_bytes.decode("utf-8"))
-    diff_sha256 = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
-
-    # Evaluate in isolated worker via DeepSeekAgentAdapter with write_capable_enabled=True
-    adapter = DeepSeekAgentAdapter(api_key="offline-placeholder")
+    adapter = DeepSeekAgentAdapter(api_key="offline-placeholder" if mode == MODE_OFFLINE_SIMULATED else api_key)
+    # This enables candidate evaluation only; adapter.repair never applies to the workspace.
     adapter.write_capable_enabled = True
+    ctx = incident_context or {"alertname": EXPECTED_ALERT_NAME, "trace_id": f"trace-{incident_id}"}
 
-    ctx = incident_context or {
-        "alertname": EXPECTED_ALERT_NAME,
-        "trace_id": f"trace-{incident_id}",
-    }
+    if mode == MODE_OFFLINE_SIMULATED:
+        diff_text = simulated_diff if simulated_diff is not None else generate_synthetic_remediation_diff(original_bytes.decode("utf-8"))
+        from unittest.mock import patch
+        with patch.object(adapter, "_call_api", return_value=(f"```diff\n{diff_text}\n```", None)):
+            repair_result = adapter.repair(ctx, workspace_path=safe_ws, operator_approved=True)
+        repair_result["model_executed"] = False
+    else:
+        repair_result = adapter.repair(ctx, workspace_path=safe_ws, operator_approved=True)
+        if repair_result.get("status") != "automatic_patch_application_disabled":
+            raise RuntimeError(f"Live proposal failed: {repair_result.get('status', 'unknown')}")
+        diff_text = repair_result.get("diff")
+        if not isinstance(diff_text, str):
+            raise RuntimeError("Live proposal failed: missing diff")
+        valid, _ = validate_unified_diff(diff_text, allowed_rel_path="backend/main.py")
+        if not valid:
+            raise RuntimeError("Live proposal failed: invalid diff")
 
-    from unittest.mock import patch
-
-    with patch.object(adapter, "_call_api", return_value=(f"```diff\n{diff_text}\n```", None)):
-        repair_result = adapter.repair(
-            ctx,
-            workspace_path=safe_ws,
-            operator_approved=True,
-        )
-
-    # No provider or model was executed in the simulated path.
-    repair_result["model_executed"] = False
-    repair_result["execution_mode"] = MODE_OFFLINE_SIMULATED
-
-    # Confirm workspace target file was untouched
-    assert target_file.read_bytes() == original_bytes, "Workspace target file was illegally modified during proposal!"
+    repair_result["execution_mode"] = mode
+    if target_file.read_bytes() != original_bytes:
+        raise RuntimeError("Workspace target changed during proposal")
+    diff_sha256 = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
 
     return {
         "proposal_id": f"prop-{uuid.uuid4().hex[:8]}",
@@ -321,10 +322,10 @@ def run_controlled_model_drill(
     """
     if human_approved is not False:
         raise PermissionError("Pre-approval is not accepted; review the proposal first")
-    if mode != MODE_OFFLINE_SIMULATED:
-        raise PermissionError(
-            "Live provider remediation blocked: autonomous write-capable execution not authorized for live provider"
-        )
+    if mode not in (MODE_OFFLINE_SIMULATED, MODE_LIVE_PROVIDER):
+        raise ValueError("Unknown drill mode")
+    if mode == MODE_LIVE_PROVIDER and simulated_diff is not None:
+        raise ValueError("A simulated diff cannot be used in live provider mode")
 
     inc_id = incident_id or f"drill-model-{uuid.uuid4().hex[:8]}"
     repo_root = Path(__file__).resolve().parents[1]
@@ -365,10 +366,11 @@ def run_controlled_model_drill(
 
         repair_result = proposal.get("repair_result", {})
         # Verify policy constraints: automatic application was strictly withheld
-        assert repair_result.get("status") == "automatic_patch_application_disabled"
-        assert repair_result.get("patch_applied") is False
-        assert repair_result.get("automatic_patch_application_enabled") is False
-        assert repair_result.get("independent_validation") is False
+        if (repair_result.get("status") != "automatic_patch_application_disabled"
+                or repair_result.get("patch_applied") is not False
+                or repair_result.get("automatic_patch_application_enabled") is not False
+                or repair_result.get("independent_validation") is not False):
+            raise RuntimeError(f"Candidate evaluation failed: {repair_result.get('status', 'unknown')}")
 
         # Confirm workspace target file was untouched by adapter
         assert has_task_creation_defect(ws), "Target file must remain defective after adapter proposal"
@@ -479,7 +481,10 @@ if __name__ == "__main__":
         print("Diff SHA-256:", proposal["diff_sha256"])
         return input("Apply this diff to the disposable workspace? Type YES: ") == "YES"
 
-    res = run_controlled_model_drill(review_callback=review)
+    parser = argparse.ArgumentParser(description="Run a supervised local remediation drill")
+    parser.add_argument("--mode", choices=(MODE_OFFLINE_SIMULATED, MODE_LIVE_PROVIDER), default=MODE_OFFLINE_SIMULATED)
+    args = parser.parse_args()
+    res = run_controlled_model_drill(mode=args.mode, review_callback=review)
     print("Drill finished:")
     print(json.dumps(res, indent=2))
     sys.exit(0 if res.get("success") else 1)

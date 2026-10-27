@@ -247,18 +247,9 @@ def test_apply_human_reviewed_patch_requires_explicit_boolean_true():
         cleanup_disposable_workspace(ws, "test-human-check")
 
 
-def test_live_provider_mode_explicitly_blocked():
-    """Verify that MODE_LIVE_PROVIDER raises PermissionError."""
-    repo_root = Path(__file__).resolve().parents[2]
-    ws = create_disposable_workspace(repo_root, "test-live-mode")
-    try:
-        with pytest.raises(PermissionError, match="Live provider remediation blocked"):
-            run_controlled_model_drill(mode=MODE_LIVE_PROVIDER)
-
-        with pytest.raises(PermissionError, match="Live provider remediation blocked"):
-            create_remediation_proposal("test-live-mode", ws, mode=MODE_LIVE_PROVIDER)
-    finally:
-        cleanup_disposable_workspace(ws, "test-live-mode")
+def test_live_provider_rejects_simulated_diff():
+    with pytest.raises(ValueError, match="simulated diff"):
+        run_controlled_model_drill(mode=MODE_LIVE_PROVIDER, simulated_diff="test")
 
 
 def test_automatic_container_recovery_is_disabled(monkeypatch, tmp_path):

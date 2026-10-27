@@ -154,13 +154,13 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
   - *5-Stage Controlled Demonstration Flow (`model_drill.py`):*
     1. Simulated alert context and simulated read-only diagnosis.
     2. Defect injection strictly into disposable workspace & BEFORE HTTP verification (normal=201, urgent=500).
-    3. Synthetic diff proposal & isolated container evaluation: automatic patch application is disabled by policy; target file remains defective.
+    3. Offline synthetic diff or explicit live-provider diff proposal & isolated container evaluation: automatic patch application is disabled by policy; target file remains defective.
     4. Explicit human review and approval: operator inspects diff and confirms application strictly to disposable workspace.
     5. AFTER verification: success requires the worker to exit successfully and its HTTP and SQLite checks to pass. A failed worker is reported as failed even if its parsed output appears positive; if review is withheld, AFTER is not run. Main repository checkout and production are never modified.
-  - *Offline Simulation vs Live Model Execution:* All local regression tests and demonstrations run offline using simulated/mock model responses. No live calls to DeepSeek API or real credentials are used in tests.
+  - *Offline Simulation vs Live Model Execution:* The default mode generates a synthetic diff and cannot invoke a provider. `live_provider` explicitly sends the disposable target file and incident context to DeepSeek to request a diff. Provider errors, malformed responses, invalid diffs and failed candidate evaluation stop the drill before review or application. Tests intercept transport and use dummy keys; no live provider run is claimed.
   - *Verifier Limitations:* Loopback HTTP checks run in a separate process inside the same container, not a separate security domain. In-process pytest shares Python runtime with candidate code and is advisory only. SQLite inspection shares UID 10001 and filesystem permissions with the candidate, which can alter the database. For the DeepSeek adapter, `tests_passed` remains false on both successful and failed functional verification; `tests_passed_advisory` reports pytest only. The responder requires `tests_passed` for success and therefore cannot present this advisory result as a verified repair.
   - *Human Approval Limitations:* The CLI displays the diff, workspace and hashes, then asks the operator to type YES. The programmatic callback is a trust boundary: tests can simulate confirmation but cannot prove a human reviewed it. Preapproval is rejected. The current-process workspace registration and hashes are checked again before writing; symlinks are rejected. Portable filesystem operations cannot eliminate a race between the last check and replacement, nor protect against a hostile process with the same user privileges. Run only one supervised drill at a time in a private workspace with no concurrent writers: the shared workspace retention and disk registry are not coordinated across processes and can remove another drill's workspace.
-- **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation is intentionally disabled. The limited diagnosis-only PR was approved and merged; full autonomous AI code remediation is still unproven.
+- **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation remains unproven; the live provider mode is a supervised local experiment, not autonomous remediation. The limited diagnosis-only PR was approved and merged; full autonomous AI code remediation is still unproven.
 
 ---
 
@@ -173,6 +173,25 @@ Execute the controlled 5-stage demonstration flow for DeepSeekAgentAdapter with 
 uv run --project backend pytest incident-response/tests/test_model_drill.py -v
 uv run --project backend python incident-response/model_drill.py
 ```
+
+To opt into a supervised live provider experiment, an operator can set the key in the current shell without displaying it or saving it in the repository. For example, in Bash:
+
+```bash
+read -rs -p 'DeepSeek API key: ' DEEPSEEK_API_KEY; echo
+export DEEPSEEK_API_KEY
+uv run --project backend python incident-response/model_drill.py --mode live_provider
+unset DEEPSEEK_API_KEY
+```
+
+On PowerShell, use a secure prompt and remove the environment variable afterwards:
+
+```powershell
+$env:DEEPSEEK_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'DeepSeek API key' -AsSecureString)).Password
+uv run --project backend python incident-response/model_drill.py --mode live_provider
+Remove-Item Env:DEEPSEEK_API_KEY
+```
+
+The live request sends the disposable `backend/main.py` content and synthetic incident context to DeepSeek; review the data and provider terms before running it. The CLI prints the proposed diff and hashes, then requires the operator to type `YES`; any other answer withholds application. A successful AFTER result still has the shared-permission verification limits above. Do not run concurrent drills or writers. No live DeepSeek execution or human-reviewed live repair has been demonstrated by the automated tests.
 
 ### 7.2 Recovering Orphaned Containers Safely
 Automatic orphan recovery is disabled because the registry is not a reliable cross-process ownership record. Do not use bulk removal commands. List and inspect resources individually:
