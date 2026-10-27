@@ -2,7 +2,7 @@
 
 **As-of date:** October 26, 2026 (Lima). **Verified submission candidate:** [`96d3ebc`](https://github.com/LE0ST/tasklane/commit/96d3ebce69ed76345635fa5a90c82773229e0d9e). [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) passed 4/4; Render deploy `dep-dbfn7b4s728c73dq7f90` was verified `live`. No new public `/health` probe is claimed for this docs-only SHA. The earlier `946b582` baseline and its health verification remain historical evidence. PR #9 has passed external SRE/security review for its restricted diagnosis-only scope and was merged with explicit maintainer authorization. Deployment and postmerge CI checks are tracked separately.
 
-This is an auditable index, **not** a claim of grades awarded by peer reviewers. Source evidence is public issue/PR/CI history plus read-only cloud checks. External AI audit summaries are recorded as PR discussion comments, not represented as native GitHub approval reviews.
+This is an auditable index, **not** a claim of grades awarded by peer reviewers. The merged baseline uses public issue/PR/CI history and read-only cloud checks; the feature-branch experiment below is a separate maintainer report. External AI audit summaries are recorded as PR discussion comments, not represented as native GitHub approval reviews.
 
 ## Delivery chain: issue → PR → merged commit → CI
 
@@ -31,7 +31,7 @@ The [official course project rubric](https://github.com/DataTalksClub/ai-dev-too
 | CI/CD | [Actions workflow](../.github/workflows/ci.yml), Render `main` autoDeployTrigger=`checksPass` | Automatic production deployment; **no separate staging environment or manual production promotion** is claimed |
 | Observability | [OTel guide](observability.md), [PR #7](https://github.com/LE0ST/tasklane/pull/7) | Local-only Prometheus/Loki/Tempo/Grafana, not production telemetry |
 | Alerting on User Impact | [PR #8](https://github.com/LE0ST/tasklane/pull/8), [incident drill](incident-drill.md) | Real task endpoint 503, metric/log/trace and Grafana firing→resolved; no production fault injection |
-| On-Call Agent | [Merged PR #9](https://github.com/LE0ST/tasklane/pull/9), [on-call CI](https://github.com/LE0ST/tasklane/actions/runs/40272231320) | **PARTIAL ONLY:** real Grafana alert wakes local read-only responder; deterministic MockAgentAdapter applies a fixture rollback in a separate TestClient/SQLite drill. No LLM-authored code fix, no proven full rubric outcome |
+| On-Call Agent | [Merged PR #9](https://github.com/LE0ST/tasklane/pull/9), [on-call CI](https://github.com/LE0ST/tasklane/actions/runs/40272231320) | **PARTIAL ONLY:** real Grafana alert wakes local read-only responder; deterministic MockAgentAdapter applies a fixture rollback in a separate TestClient/SQLite drill. A separate supervised live-provider diff and disposable-workspace application are maintainer-reported at feature-branch `2cc5251`; no alert-triggered autonomous fix or proven full rubric outcome |
 
 ## Verified production infrastructure — read-only
 
@@ -44,6 +44,6 @@ The [official course project rubric](https://github.com/DataTalksClub/ai-dev-too
 
 - The verified submission candidate is `96d3ebce69ed76345635fa5a90c82773229e0d9e`. Course submission remains **unverified**. If choosing a later documentation revision, use its exact merged SHA after its own checks; do not confuse a feature-branch HEAD with its squash-merge commit.
 - The Codex adapter exists in the merged local diagnostic code, but **live write-capable Codex remains disabled/unverified**. Non-root, `cwd` and environment filtering do not make an independent OS-level sandbox.
-- A full on-call AI code-fix demonstration requires separately reviewed enforced isolation, maintainer authorization and actual model-authored diff + restored running HTTP service. No such result is claimed.
+- A separate [maintainer-reported supervised live run](oncall-drill.md#maintainer-reported-supervised-live-run) at local feature-branch SHA `2cc525107d2cf977e8c9dc9e0bf68b0f478b5a65` reports a live-provider response, human-approved disposable-workspace patch, and `after=passed`. No independent run artifact was supplied. It does not establish an alert-triggered autonomous fix or independently isolated verification; it is not merged-main or CI evidence.
 - GitHub shows PRs under the authenticated maintainer account. Agent roles describe work allocation, not separate GitHub identities or accounts.
 - Peer-review completion and final course-platform submission remain **unverified**. See [submission checklist](submission-checklist.md).

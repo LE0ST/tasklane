@@ -301,7 +301,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | [#1 — Team, process, modular docs](https://github.com/LE0ST/tasklane/issues/1) | Closed | [PR #6](https://github.com/LE0ST/tasklane/pull/6), merged `f6f4c7b` |
 | [#2 — Correlated observability](https://github.com/LE0ST/tasklane/issues/2) | Closed | [PR #7](https://github.com/LE0ST/tasklane/pull/7), merged `cc9cce7` |
 | [#3 — User-impact alert and drill](https://github.com/LE0ST/tasklane/issues/3) | Closed | [PR #8](https://github.com/LE0ST/tasklane/pull/8), merged `9968999` |
-| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446`; approved limited diagnosis-only scope, full model-authored remediation not demonstrated |
+| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446`; approved limited diagnosis-only scope; a separate human-reviewed live-provider drill is reported, while alert-triggered autonomous remediation remains unproven |
 | [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | [PR #10](https://github.com/LE0ST/tasklane/pull/10) and [PR #11](https://github.com/LE0ST/tasklane/pull/11) merged; verified candidate `96d3ebce69ed76345635fa5a90c82773229e0d9e`, [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) 4/4, with the matching Render deployment live; platform submission and three peer reviews remain unverified |
 
 See [the detailed traceability matrix](docs/evidence-traceability.md) for CI links, reviewer handoffs, and precise claims.

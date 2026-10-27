@@ -14,7 +14,7 @@ TaskLane is an educational, containerized Mini Kanban Board application with a p
 - **Public Application:** [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - **Public Tracker:** [https://github.com/LE0ST/tasklane/issues](https://github.com/LE0ST/tasklane/issues)
 - **CI Baseline:** Four GitHub Actions jobs; 76 backend tests + 54 responder tests at merged PR #9, [CI 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271). Counts are evidence snapshots, not fixed promises.
-- **AI Remediation Limit:** Real Grafana-triggered **local read-only diagnosis** is validated. The independent mock repair is deterministic; a live LLM-authored fix is **not demonstrated** and write-capable Codex remains disabled.
+- **AI Remediation Limit:** Real Grafana-triggered **local read-only diagnosis** is validated. A separate maintainer-reported live-provider diff was human-reviewed and applied in a disposable workspace; alert-triggered autonomous repair is **not demonstrated** and write-capable Codex remains disabled. See [on-call evidence](docs/oncall-drill.md#maintainer-reported-supervised-live-run).
 
 ---
 

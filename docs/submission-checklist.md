@@ -49,7 +49,7 @@ Open [Project 1 — course platform](https://courses.datatalks.club/ai-dev-tools
 
 ## Do not overstate
 
-- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. No live coding model generated the tested repair. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
+- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. A later [maintainer-reported live-provider run](oncall-drill.md#maintainer-reported-supervised-live-run) produced a human-reviewed diff applied in a disposable workspace; it is not merged-main evidence or an alert-triggered autonomous fix. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
 - **CI/CD:** CI covers four jobs and Render auto-deploys on passing checks. No staging-to-manual-production pipeline is claimed.
 - **Production database:** Current Neon SELECT evidence is read-only; historical Render DB condition was not reverified. No fresh production data mutation or independently verified backup is claimed.
 - **Security audit:** Astra and Sol provide external read-only reports/PR comments. Do not misrepresent their analyses as native GitHub reviews or approval to merge.

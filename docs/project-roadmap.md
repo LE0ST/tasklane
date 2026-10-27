@@ -15,9 +15,14 @@
 ## Practical dependency order
 
 1. PR #9's independent security/SRE review and human-authorized squash merge are completed at `7c73446`. Only the limited read-only diagnostic feature is accepted; Issue #4 remains open for any unproven autonomous remediation.
-2. The opt-in on-call overlay is now versioned in merged `main`; the mock exercise and real Grafana alert-delivery checks remain separate. No production agent deployment or LLM-generated fix is claimed.
+2. The opt-in on-call overlay is now versioned in merged `main`; the mock exercise and real Grafana alert-delivery checks remain separate. A later [maintainer-reported live-provider drill](oncall-drill.md#maintainer-reported-supervised-live-run) is separate, supervised, and confined to a disposable workspace; no alert-triggered autonomous fix or production agent deployment is claimed.
 3. Review and merge Issue #5 documentation on a separate branch after changes are verified, then capture the final merged `main` SHA and check Render/Neon read-only.
 4. Confirm the exact submission deadline/time zone on the course platform, submit the public repository/demo, and complete **three peer reviews**.
+
+## Remaining acceptance evidence
+
+- **Issue #4:** Preserve scrubbed evidence tying a real alert webhook, incident metadata and trace/logs to the agent response and actual repair in the same local run. The existing real-alert read-only diagnosis and the maintainer-reported human-approved live drill are separate. The autonomous disposable-workspace remediation criterion, a trustworthy passing test and recovered user journey, and the complete wake/diagnose/fix trail remain unproven. Any future write-capable path needs explicitly enabled bounded privileges and a separately reviewed isolation and verification boundary; keep read-only defaults and production isolation.
+- **Issue #5:** Confirm the final public repository and exact submission SHA, submission status, and three peer-review records. If a later merged candidate is selected, verify its own CI and deployment evidence; do not present the local feature SHA as deployed. Historical Neon persistence and comparison with the original Render database exist, but the original database's present state and an independent source backup are unverified. Keep the recovery plan and verify an available backup when authorized; do not attempt to access the former database, and do not alter production to fill the gap. Confirm current course-platform instructions and deadlines rather than assuming the historical dates still apply.
 
 ## Rubric evidence mapping
 
@@ -26,6 +31,6 @@ The official criteria include Problem Description, Product Specification, Agent 
 - **Specification and team:** [`_docs/specs.md`](../_docs/specs.md), [AGENTS.md](../AGENTS.md), [teams.md](teams.md), [process.md](process.md), [Issues](https://github.com/LE0ST/tasklane/issues).
 - **App, testing, containers, deployment and CD:** [README](../README.md), [CI workflow](../.github/workflows/ci.yml), [Compose](../docker-compose.yml), [runbook](operations-runbook.md), [Render demo](https://tasklane-app.onrender.com).
 - **Observability and alert:** [observability](observability.md), [incident-drill](incident-drill.md), PRs #7/#8 with real CI evidence.
-- **On-call:** [Merged PR #9](https://github.com/LE0ST/tasklane/pull/9) verifies local Grafana-to-responder diagnostics; the separate deterministic mock fix is **not** autonomous model-generated remediation. Full rubric credit is not claimed.
+- **On-call:** [Merged PR #9](https://github.com/LE0ST/tasklane/pull/9) verifies local Grafana-to-responder diagnostics; the separate maintainer-reported live diff required human approval and is not an alert-triggered autonomous repair. Full rubric credit is not claimed.
 
 **No projection of 23–24/24 or other unawarded score is made.** External course reviewers grade the submission.
