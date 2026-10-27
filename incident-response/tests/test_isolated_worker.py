@@ -766,3 +766,27 @@ def test_pytest_in_process_candidate_execution_is_untrusted_boundary(tmp_path):
             isolated_worker.IsolatedWorkerController._execute_bounded_container = orig_exec
 
 
+
+
+def test_worker_can_read_allowlisted_staging_files_as_unprivileged_user(tmp_path):
+    """Linux bind mounts preserve host ownership; the worker must read the staged manifest."""
+    import stat
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[2]
+    with IsolatedWorkerSession.create(repo_root, staging_parent=tmp_path) as session:
+        files = [session.staging_dir / "backend" / "main.py",
+                 session.staging_dir / "backend" / "tests" / "test_api.py"]
+        if os.name != "nt":
+            for path in files:
+                assert stat.S_IMODE(path.stat().st_mode) == 0o644
+            assert stat.S_IMODE(session.staging_dir.stat().st_mode) == 0o755
+        image = IsolatedWorkerController.get_immutable_image_id()
+        assert image is not None
+        mount = str(session.staging_dir.resolve()).replace("\\", "/")
+        cmd = ["docker", "run", "--rm", "--network", "none", "--read-only",
+               "--user", "10001:10001", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+               "--log-driver", "none", "-v", f"{mount}:/workspace:ro", "--entrypoint", "python", image,
+               "-c", "from pathlib import Path; [Path(p).read_bytes() for p in ('/workspace/backend/main.py', '/workspace/backend/tests/test_api.py')]"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        assert result.returncode == 0, result.stderr

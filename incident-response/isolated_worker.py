@@ -231,10 +231,16 @@ class IsolatedWorkerSession:
         """
         resolved_src = source_workspace.resolve()
         parent_dir = staging_parent or Path(tempfile.gettempdir()).resolve() / "tasklane_worker_staging"
-        parent_dir.mkdir(parents=True, exist_ok=True)
+        parent_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if staging_parent is None and os.name != "nt":
+            # Only the service-owned parent is changed; callers own custom parents.
+            parent_dir.chmod(0o700)
 
         staging_dir = parent_dir / f"stage_{uuid.uuid4().hex[:12]}"
         staging_dir.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            # The read-only bind mount is entered by the unprivileged worker UID.
+            staging_dir.chmod(0o755)
 
         session = cls(staging_dir)
 
@@ -249,9 +255,13 @@ class IsolatedWorkerSession:
 
             harness_path = backend_dir / "_run_functional_harness.py"
             harness_path.write_text(cls._get_harness_script_content(), encoding="utf-8")
+            if os.name != "nt":
+                harness_path.chmod(0o644)
 
             verifier_path = backend_dir / "_trusted_verifier.py"
             verifier_path.write_text(cls._get_verifier_script_content(), encoding="utf-8")
+            if os.name != "nt":
+                verifier_path.chmod(0o644)
 
             # Final negative validation on the staging directory
             if (staging_dir / ".git").exists():
@@ -291,6 +301,8 @@ class IsolatedWorkerSession:
         while curr_dest != dest_root:
             if curr_dest.is_symlink() or os.path.islink(curr_dest):
                 raise SecurityError(f"Symlink rejected in destination hierarchy: {curr_dest}")
+            if os.name != "nt":
+                curr_dest.chmod(0o755)
             curr_dest = curr_dest.parent
 
         # 2. Open source with O_NOFOLLOW to prevent concurrent substitution during open
@@ -316,6 +328,9 @@ class IsolatedWorkerSession:
 
             dest_fd = os.open(str(dest_file), open_flags_dest, 0o600)
             try:
+                if os.name != "nt":
+                    # Only allowlisted staging files are exposed; the mount remains read-only.
+                    os.fchmod(dest_fd, 0o644)
                 while True:
                     chunk = os.read(src_fd, 65536)
                     if not chunk:
@@ -522,6 +537,9 @@ try:
     )
     sys.stdout.write(verifier_proc.stdout)
     sys.stderr.write(verifier_proc.stderr)
+    if verifier_proc.returncode != 0 and app_proc.poll() is not None:
+        # Never forward candidate-controlled output into the verifier stream.
+        sys.stderr.write("Candidate process exited before verification (exit code %s).\\n" % app_proc.returncode)
     sys.exit(verifier_proc.returncode)
 finally:
     app_proc.terminate()
