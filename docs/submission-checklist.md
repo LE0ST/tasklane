@@ -4,6 +4,9 @@
 
 ## Public submission metadata
 
+- **Verified application release prior to this documentation-only follow-up:** `cffdf3c5a9813846c3a85a5d8c1b0548b0c45138`, after [PR #16](https://github.com/LE0ST/tasklane/pull/16) and [PR #17](https://github.com/LE0ST/tasklane/pull/17). [Post-merge CI 40632293401](https://github.com/LE0ST/tasklane/actions/runs/40632293401) passed 4/4; Render deploy `dep-dbgnlhnb9u1s7394br00` was `live` at the same SHA. A later documentation-only merge will have a **new SHA** requiring its own checks and submission update.
+- **Issue closure:** [#4 closed partially](https://github.com/LE0ST/tasklane/issues/4#issuecomment-6460818260) and [#5 closed completed](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6460818783); the remaining autonomous on-call scope was not planned.
+
 - Repository: [https://github.com/LE0ST/tasklane](https://github.com/LE0ST/tasklane)
 - Public demo: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
 - API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
@@ -12,7 +15,7 @@
 - **Merged PR #15 and CI:** [PR #15](https://github.com/LE0ST/tasklane/pull/15) was squash-merged as `65378015cad42e107148ec0f6618472b54a1e36b`; [push-to-main CI 40618254717](https://github.com/LE0ST/tasklane/actions/runs/40618254717) passed all four jobs. This is not proof of the SHA saved on the course platform or deployed on Render.
 - **Maintainer confirmation:** The submission has been saved and the platform allows it to be updated. These are maintainer confirmations, not independent platform verification; the currently saved SHA is unknown.
 - Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; the merged baseline demonstrated no real AI-generated repair.
-- Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
+- Any post-closure documentation correction requires independent review and explicit maintainer approval for its PR merge; closing Issue #5 is not permission to push directly to `main`.
 
 ## Final gate checklist — update only when evidence exists
 
@@ -52,6 +55,8 @@ The authenticated page displayed October 26, 2026 at 18:00 in the maintainer acc
 **Submission and peer review are separate obligations.** Saving a project does not satisfy the requirement to review three other participants' projects. The maintainer confirms that three projects were reviewed and scored using the course platform; independent verification of those records and retained evidence remain outstanding. The [official rubric](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md) describes the review requirement. The public unauthenticated page does not expose the participant-specific review workflow.
 
 ## Do not overstate
+
+- **Public shared demo:** No login, task owner IDs or per-user authorization. All visitors share one Neon-backed task collection and may view, edit, create and delete each other's tasks. This is not private storage; avoid sensitive data and avoid production write tests.
 
 - **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. A later [maintainer-reported live-provider run](oncall-drill.md#maintainer-reported-supervised-live-run) produced a human-reviewed diff applied in a disposable workspace; the implementation and report were later merged in PR #15, but the report is not an independently verified run or an alert-triggered autonomous fix. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
 - **CI/CD:** CI covers four jobs and Render auto-deploys on passing checks. No staging-to-manual-production pipeline is claimed.
