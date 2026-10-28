@@ -1,10 +1,15 @@
 """Process isolation and workspace containment for disposable incident response environments.
 
-SECURITY DISCLAIMER:
+SECURITY DISCLAIMER & LIMITATIONS:
 The containment mechanisms in this module (directory boundary checks, environment allowlisting,
-process timeouts, and unprivileged user execution) provide defense-in-depth policy constraints.
-They DO NOT constitute an OS-level kernel security sandbox. Untrusted code must never be executed
-without an independently isolated worker (e.g. gVisor, Firecracker, or isolated container runtime).
+and subprocess timeouts) provide application-level policy constraints on the host.
+They DO NOT constitute an OS-level kernel security sandbox or microVM boundary:
+- Subprocesses execute as the current host process user (unprivileged non-root execution exists
+  only when the responder is packaged inside its Docker container, not in host subprocesses).
+- Egress network isolation is NOT enforced on host sockets (HTTP_PROXY does not block direct TCP).
+- Output is only truncated to 64 KB after capture; subprocess stdout/stderr pipes are not memory-bounded.
+Untrusted model-generated code must never be executed directly on the host without an independently
+isolated worker (e.g. isolated container runtime with disabled network and dropped capabilities).
 
 Enforces:
 - Service-owned directory and incident-bound workspace registry.
@@ -12,13 +17,14 @@ Enforces:
 - Bounded workspace and token retention (prunes stale directories).
 - Minimal environment allowlist (purges AWS, database URLs, HOME, PYTHONPATH).
 - Rejection of unsafe overrides (LD_PRELOAD, PYTEST_ADDOPTS, proxy settings, credentials).
-- Process execution timeouts and output buffer bounding (64 KB).
+- Subprocess execution timeouts and post-run output truncation (64 KB).
 - Forbidden flags guard (blocks --dangerously-bypass-approvals-and-sandbox).
 """
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -82,6 +88,11 @@ def get_registered_workspace(incident_id: str) -> Optional[Path]:
     except Exception:
         pass
     return None
+
+
+def is_active_workspace_registration(incident_id: str, path: Path) -> bool:
+    """Require the current process's explicit registration, without disk fallback."""
+    return _workspace_registry.get(incident_id) == path.resolve()
 
 
 def unregister_workspace(incident_id: str) -> None:
@@ -434,6 +445,7 @@ def sanitize_process_environment(extra_env: Optional[Dict[str, str]] = None) -> 
         "RENDER_API_KEY",
         "NEON_API_KEY",
         "OPENAI_API_KEY",
+        "DEEPSEEK_API_KEY",
     ]:
         clean_env.pop(sensitive, None)
 
@@ -544,3 +556,76 @@ def run_disposable_tests(workspace_path: Path, incident_id: Optional[str] = None
     )
     output = f"{stdout}\n{stderr}".strip()[:MAX_OUTPUT_BYTES]
     return (ret == 0), output
+
+
+def validate_safe_target_file(target_file: Path, workspace_root: Path) -> Path:
+    """Validate that target_file exists, is a regular file within workspace_root, and contains NO symlinks.
+
+    Rejects symlinked target files, symlinks in ancestor directories, and paths escaping workspace_root.
+    """
+    resolved_ws = workspace_root.resolve()
+    resolved_file = target_file.resolve()
+
+    if target_file.is_symlink() or getattr(target_file, "is_junction", lambda: False)():
+        raise SecurityViolation(f"Target file is a symlink: {target_file}")
+
+    # Verify no parent directory between target_file and workspace_root is a symlink
+    curr = target_file.parent
+    while curr != workspace_root and curr != curr.parent:
+        if curr.is_symlink() or getattr(curr, "is_junction", lambda: False)():
+            raise SecurityViolation(f"Target path ancestor is a symlink: {curr}")
+        if curr.resolve() == resolved_ws:
+            break
+        curr = curr.parent
+
+    # Containment check: resolved file must start with resolved workspace root
+    try:
+        resolved_file.relative_to(resolved_ws)
+    except ValueError:
+        raise SecurityViolation(f"Target file {resolved_file} escapes workspace {resolved_ws}")
+
+    if not resolved_file.exists():
+        raise FileNotFoundError(f"Target file not found: {resolved_file}")
+
+    if not resolved_file.is_file():
+        raise SecurityViolation(f"Target file is not a regular file: {resolved_file}")
+
+    return resolved_file
+
+
+def atomic_write_file(target_file: Path, content: str, encoding: str = "utf-8") -> None:
+    """Atomically write content to target_file using a temporary file in the same directory."""
+    target_dir = target_file.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f".tmp_{target_file.name}_"
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=target_dir, prefix=prefix, delete=False, encoding=encoding) as tf:
+            tmp_path = Path(tf.name)
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_path, target_file)
+        tmp_path = None
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def is_isolated_worker_available() -> bool:
+    """Check if an independently isolated test worker (with disabled network and filesystem boundary) is active.
+
+    CRITICAL SAFETY REQUIREMENT:
+    An environment variable cannot declare on its own that an isolated worker exists.
+    Requires verified runtime probe via IsolatedWorkerController.
+    """
+    try:
+        from isolated_worker import IsolatedWorkerController
+        return IsolatedWorkerController.is_available()
+    except Exception:
+        return False
+

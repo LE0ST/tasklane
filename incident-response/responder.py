@@ -24,7 +24,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from agent_adapter import BaseAgentAdapter, CodexAgentAdapter, MockAgentAdapter
+from agent_adapter import (
+    BaseAgentAdapter,
+    CodexAgentAdapter,
+    DeepSeekAgentAdapter,
+    MockAgentAdapter,
+)
 from collector import collect_incident_context
 from config import (
     ALLOW_HTTP_REPAIR,
@@ -98,8 +103,16 @@ _current_incident: Optional[Dict[str, Any]] = None
 _incident_history: List[Dict[str, Any]] = []
 _http_repair_allowed: bool = ALLOW_HTTP_REPAIR
 
+def create_configured_adapter() -> BaseAgentAdapter:
+    adapter_name = os.environ.get("TASKLANE_AGENT_ADAPTER", "mock").lower()
+    if adapter_name == "deepseek":
+        return DeepSeekAgentAdapter()
+    if adapter_name == "codex":
+        return CodexAgentAdapter()
+    return MockAgentAdapter()
+
 # Active adapter (default to MockAgentAdapter for deterministic CI safety)
-_active_adapter: BaseAgentAdapter = MockAgentAdapter()
+_active_adapter: BaseAgentAdapter = create_configured_adapter()
 
 
 def is_http_repair_allowed() -> bool:
@@ -194,6 +207,8 @@ class ResponderHandler(BaseHTTPRequestHandler):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if getattr(self, "close_connection", False):
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
 
@@ -267,6 +282,12 @@ class ResponderHandler(BaseHTTPRequestHandler):
         if content_length < 2:
             return self.send_json(400, {"error": "empty_payload"})
         if content_length > MAX_PAYLOAD_BYTES:
+            self.close_connection = True
+            try:
+                to_drain = min(content_length, MAX_PAYLOAD_BYTES * 2)
+                self.rfile.read(to_drain)
+            except Exception:
+                pass
             return self.send_json(413, {"error": "payload_too_large"})
 
         # 2. Parse JSON
@@ -533,6 +554,14 @@ class ResponderHandler(BaseHTTPRequestHandler):
         # 2. Parse payload
         try:
             content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > MAX_PAYLOAD_BYTES:
+                self.close_connection = True
+                try:
+                    to_drain = min(content_length, MAX_PAYLOAD_BYTES * 2)
+                    self.rfile.read(to_drain)
+                except Exception:
+                    pass
+                return self.send_json(413, {"error": "payload_too_large"})
             payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
             if not isinstance(payload, dict):
                 return self.send_json(400, {"error": "malformed_json"})

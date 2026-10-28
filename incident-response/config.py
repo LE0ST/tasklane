@@ -21,6 +21,27 @@ LOKI_SERVICE_NAME = os.environ.get("LOKI_SERVICE_NAME", "tasklane-api")
 EXPECTED_ALERT_NAME = "TaskLane5xxRate"
 MAX_PAYLOAD_BYTES = 65536   # 64 KB max alert webhook payload
 MAX_OUTPUT_BYTES = 65536    # 64 KB max subprocess capture buffer
+MAX_DIFF_BYTES = int(os.environ.get("MAX_DIFF_BYTES", "16384"))  # 16 KB max model diff
+
+# Model settings
+DEEPSEEK_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+ALLOWED_DEEPSEEK_HOSTS = {"api.deepseek.com"}
+
+# Fixed sanitized error categories (no raw remote text, URLs, or exception interpolations)
+ERROR_UPSTREAM_HTTP = "upstream_http_error"
+ERROR_UPSTREAM_CONNECTION = "upstream_connection_error"
+ERROR_UPSTREAM_TIMEOUT = "upstream_timeout"
+ERROR_UPSTREAM_PROTOCOL = "upstream_protocol_error"
+ERROR_UPSTREAM_PAYLOAD_TOO_LARGE = "upstream_payload_too_large"
+ERROR_UPSTREAM_INVALID_RESPONSE = "upstream_invalid_response"
+ERROR_INSECURE_API_SCHEME = "insecure_api_scheme"
+ERROR_UNAUTHORIZED_API_HOST = "unauthorized_api_host"
+ERROR_API_KEY_MISSING = "api_key_missing"
+ERROR_BLOCKED_MISSING_ISOLATED_WORKER = "blocked_missing_isolated_worker"
+ERROR_DIFF_VALIDATION_FAILED = "diff_validation_failed"
+ERROR_PATCH_APPLICATION_FAILED = "patch_application_failed"
+ERROR_TEST_VERIFICATION_FAILED = "test_verification_failed"
 
 # Timeouts and limits
 DIAGNOSIS_TIMEOUT_SECONDS = int(os.environ.get("DIAGNOSIS_TIMEOUT_SECONDS", "30"))
@@ -70,6 +91,7 @@ FORBIDDEN_ENV_PATTERNS = {
     "NEON",
     "GITHUB",
     "GH",
+    "DEEPSEEK",
 }
 
 # Unsafe environment override keys that must be rejected if supplied in extra_env
@@ -99,6 +121,9 @@ DISPOSABLE_WORKSPACE_MANIFEST = [
     Path("backend/telemetry.py"),
     Path("backend/incident_drill.py"),
     Path("backend/alembic.ini"),
+    Path("backend/alembic/env.py"),
+    Path("backend/alembic/script.py.mako"),
+    Path("backend/alembic/versions/1ea1353bfe87_create_tasks_table.py"),
     Path("backend/pyproject.toml"),
     Path("backend/tests/test_api.py"),
     Path("pyproject.toml"),

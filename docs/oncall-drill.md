@@ -1,6 +1,6 @@
 # Issue #4 — Local On-Call Diagnostic Responder and Mock Recovery
 
-**Status (October 26, 2026):** [PR #9](https://github.com/LE0ST/tasklane/pull/9) was human-authorized and squash-merged to `main` as [`7c73446`](https://github.com/LE0ST/tasklane/commit/7c7344690bf3260297301a14f434d00cb6eb123a). [Merged-main GitHub Actions 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed all four jobs. The local Grafana alert-driven **read-only diagnosis** is implemented; deterministic mock fixture repair was separately tested. **No live LLM-authored fix or independently isolated write-capable agent repair has been demonstrated.**
+**Status (October 26, 2026):** [PR #9](https://github.com/LE0ST/tasklane/pull/9) was human-authorized and squash-merged to `main` as [`7c73446`](https://github.com/LE0ST/tasklane/commit/7c7344690bf3260297301a14f434d00cb6eb123a). [Merged-main GitHub Actions 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed all four jobs. The local Grafana alert-driven **read-only diagnosis** is implemented; deterministic mock fixture repair was separately tested. At that merged baseline, no live LLM-authored fix or independently isolated write-capable agent repair was demonstrated. A later supervised feature-branch run is recorded below.
 
 ---
 
@@ -9,14 +9,25 @@
 According to the official **AI Dev Tools Zoomcamp 2026** course rubric:
 - **On-Call Agent (2 points):** An agent wakes up on an alert and **fixes the issue**. A passive webhook receiver that only outputs diagnostic logs is insufficient.
 
-TaskLane implements a bounded, local-only **diagnostic responder** and a separate **mock-only remediation exercise** with least-privilege application-level controls. It does not yet demonstrate a real autonomous AI fix:
+TaskLane implements a bounded, local-only **diagnostic responder**, a separate mock exercise, and a supervised live-provider drill on a feature branch. It does not yet demonstrate an autonomous AI fix:
 1. **Wakes Up on Alert:** Receives real local Grafana `TaskLane5xxRate` webhook notifications on `POST /alerts` (port 8001).
 2. **Read-Only Diagnosis by Default:** Correlates local Prometheus metrics (`tasklane_task_5xx_errors_total`), structured Loki logs (`{service_name="tasklane-api"}` for `/api/tasks` 5xx), and Tempo SERVER ERROR spans without granting write permissions (`write_authorized: false`).
 3. **Strict Network-Facing Read-Only Policy:** Network-facing repair is disabled by default in normal service mode (`/authorize-repair` returns HTTP 403 `repair_disabled`). HTTP repair is permitted only when explicitly enabled locally for isolated demonstration via `TASKLANE_ALLOW_HTTP_REPAIR=true`.
 4. **Explicit Authenticated Operator Gate:** When HTTP repair is enabled, remediation requires genuine single-use, cryptographically random incident token authentication via dedicated local operator CLI (`operator_cli.py`) with strict boolean `confirm: true`. Incorrect token attempts never consume legitimate approval tokens.
 5. **Service-Owned Disposable Workspace Containment:** Defects are introduced and repaired strictly within private service-owned disposable directories (`tasklane_oncall_service`). Workspaces are registered to incident IDs. Source files are copied using an explicit POSITIVE file manifest (`DISPOSABLE_WORKSPACE_MANIFEST`), strictly excluding `.env`, credentials, `conftest.py`, and unrelated tests.
-6. **Application Policy vs Kernel Sandbox:** Subprocess directory containment, environment variable filtering, and non-root execution are application-level isolation controls, not a kernel-enforced OS sandbox (such as gVisor or microVMs).
+6. **Application Policy vs Kernel Sandbox:** Subprocess directory containment, environment variable filtering, and post-execution output truncation are application-level policy controls on the host, not a kernel-enforced OS sandbox (such as gVisor, microVMs, or network-disabled containers). Host subprocess execution runs under the current host process identity (non-root `oncall` execution is enforced only when running within the containerized service).
 7. **Truthful Reporting & Disclosures:** CI runs use `MockAgentAdapter` for deterministic safety verification (fixture marker rollback, not AI). Write-capable live model execution (`CodexAgentAdapter`) is kept explicitly **DISABLED** pending maintainer authorization. Full autonomous AI remediation remains unimplemented.
+8. **Isolated Container Test Worker & Evaluation Boundary Limitations:** Candidate model diffs are evaluated inside an ephemeral container (`tasklane-isolated-worker:local`) using an immutable digest identity, with `--network none`, `--read-only` root, non-root user `10001:10001`, dropped capabilities (`--cap-drop ALL`), and `--log-driver none`. Candidate execution (`uvicorn`) is isolated from the functional verifier (`_trusted_verifier.py`).
+   - *Worker staging permissions:* On POSIX, allowlisted staged files are readable by the unprivileged worker UID and mounted read-only; the default service-owned staging parent is private to the host user. Callers supplying a custom staging parent must keep it private. No credentials or `.env` files belong in the manifest.
+   - *Unit test boundary limitation:* Pytest executes candidate code in-process, sharing memory and file descriptors; candidate code could intercept reporters or forge stdout lines (e.g. '1 passed'). In-process test outputs are therefore classified as untrusted/advisory (`trust_level: advisory_untrusted`). They are never reported as independent proof of correctness.
+   - *Persistence verification scope & shared permissions:* Direct querying of SQLite `/tmp/tasklane.db` confirms physical database persistence on disk (preventing in-memory HTTP response mocking). However, candidate and verifier share the same container user UID 10001 and filesystem read-write permissions on `/tmp/tasklane.db`. This does NOT constitute independent security isolation between candidate and verifier.
+9. **Automatic Patch Application Disabled:** Because in-process unit tests and shared filesystem permissions lack an unforgeable, independent verification boundary, automatic application of model-generated patches to the workspace target file is strictly **DISABLED** by policy (`status: automatic_patch_application_disabled`). Workspace files are never overwritten automatically.
+10. **Resource Lifecycle, Crash Limitations & Recovery:**
+   - *In-Process Lifetime:* Active sessions and container tracking sets reside in RAM and do NOT survive process crashes (SIGKILL, power failure, or OOM).
+   - *No External Daemon Guarantee:* If the Docker daemon is unreachable or the process is killed abruptly, orphaned containers remain on the Docker host. No automatic OS watchdog or supervisor daemon exists.
+   - *Recovery:* The pending registry is best-effort, can be corrupt or overwritten by concurrent processes, and cannot establish cross-process activity. Automatic orphan recovery is disabled and reports unknown state. Orderly sessions still attempt cleanup of their own resources.
+   - *Manual recovery:* List labeled workers and inspect each resource individually. Check its full Docker ID, name, `tasklane.session_id`, state and owner with the operator responsible for concurrent sessions. Created, paused and running containers may all be active. Remove a specific resource only after establishing it is no longer in use. PID alone is not proof of inactivity.
+
 
 ---
 
@@ -83,7 +94,7 @@ All incident response operations enforce strict defense-in-depth guardrails:
 | **Workspace Ownership & Registry** | `validate_safe_workspace_path()` | Enforces registration binding to incident ID; rejects root itself, unregistered paths, parent escapes (`..`), and symlinks. |
 | **Positive File Manifest** | `DISPOSABLE_WORKSPACE_MANIFEST` | Copies ONLY files in explicit positive manifest; strictly excludes `conftest.py`, `.env`, credentials, unrelated tests, and binaries. |
 | **Minimal Environment Allowlist** | `sanitize_process_environment()` | Inherits only allowlisted system keys; purges `AWS_*`, `DATABASE_URL`, `TEST_DATABASE_URL`, `HOME`, `PYTHONPATH`. Rejects `LD_PRELOAD`, `PYTEST_ADDOPTS`, proxy overrides. |
-| **Policy Boundary vs Kernel Sandbox** | Application-level isolation | Directory `cwd` containment, unprivileged non-root execution (`oncall`), and env filtering are application policy controls, not a kernel-enforced OS sandbox. |
+| **Policy Boundary vs Kernel Sandbox** | Application-level policy on host | Directory `cwd` containment and env filtering are application policy controls, not a kernel sandbox. Non-root `oncall` execution is present only inside the containerized service image, not when executing host subprocesses. Direct TCP network egress and kernel memory bounds are not restricted on the host. |
 | **Bounded Retention** | `prune_stale_resources()` | Retains at most 3 workspaces, 10 incident history records, and automatically prunes expired/consumed tokens. |
 | **Process Timeout & Output Capture Limitations** | Subprocess timeout and post-run truncation | Only the returned output is truncated to 64KB **after** capture; stdout/stderr pipes themselves are not memory-bounded. Descendant termination and network isolation are not independently enforced. This is not a secure executor for untrusted generated code. |
 
@@ -139,13 +150,72 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
 - **Mock Adapter Disclosure:** `MockAgentAdapter` is explicitly documented as a deterministic test fixture adapter that performs marker rollback for containment verification. It is **NOT** represented as an autonomous AI or LLM repair.
 - **Codex Agent Adapter:** `CodexAgentAdapter` is implemented with `--sandbox read-only` diagnosis and `--sandbox workspace-write` repair execution. Subprocess environment is strictly sanitized via `sanitize_process_environment()`.
 - **Write-Capable Codex Execution Disabled:** In accordance with repository safety policies, write-capable Codex execution is **DISABLED** pending explicit maintainer authorization and verification of an independently isolated worker. No live write-capable model execution was performed.
-- **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation is intentionally disabled. The limited diagnosis-only PR was approved and merged; full autonomous AI code remediation is still unproven.
+- **DeepSeek Flash Agent Adapter & Controlled Local Demonstration:**
+  - *Adapter Design:* `DeepSeekAgentAdapter` implements read-only diagnosis (`diagnose`) and isolated remediation proposal (`repair`). API calls strictly enforce HTTPS, allowed host origins (`api.deepseek.com`), bounded response size, sanitized error reporting, and stripped authorization headers across redirects.
+  - *5-Stage Controlled Demonstration Flow (`model_drill.py`):*
+    1. Simulated alert context and simulated read-only diagnosis.
+    2. Defect injection strictly into disposable workspace & BEFORE HTTP verification (normal=201, urgent=500).
+    3. Offline synthetic diff or explicit live-provider diff proposal & isolated container evaluation: automatic patch application is disabled by policy; target file remains defective.
+    4. Explicit human review and approval: operator inspects diff and confirms application strictly to disposable workspace.
+    5. AFTER verification: success requires the worker to exit successfully and its HTTP and SQLite checks to pass. A failed worker is reported as failed even if its parsed output appears positive; if review is withheld, AFTER is not run. Main repository checkout and production are never modified.
+  - *Offline Simulation vs Live Model Execution:* The default mode generates a synthetic diff and cannot invoke a provider. `live_provider` explicitly sends the disposable target file and incident context to DeepSeek to request a diff. Provider errors, malformed responses, invalid diffs and failed candidate evaluation stop the drill before review or application. Automated tests intercept transport and use dummy keys. A separate maintainer-reported live run is recorded below.
+  - *Verifier Limitations:* Loopback HTTP checks run in a separate process inside the same container, not a separate security domain. In-process pytest shares Python runtime with candidate code and is advisory only. SQLite inspection shares UID 10001 and filesystem permissions with the candidate, which can alter the database. For the DeepSeek adapter, `tests_passed` remains false on both successful and failed functional verification; `tests_passed_advisory` reports pytest only. The responder requires `tests_passed` for success and therefore cannot present this advisory result as a verified repair.
+  - *Human Approval Limitations:* The CLI displays the diff, workspace and hashes, then asks the operator to type YES. The programmatic callback is a trust boundary: tests can simulate confirmation but cannot prove a human reviewed it. Preapproval is rejected. The current-process workspace registration and hashes are checked again before writing; symlinks are rejected. Portable filesystem operations cannot eliminate a race between the last check and replacement, nor protect against a hostile process with the same user privileges. Run only one supervised drill at a time in a private workspace with no concurrent writers: the shared workspace retention and disk registry are not coordinated across processes and can remove another drill's workspace.
+- **Rubric Status & Review Boundary:** Autonomous wake-up, Prometheus/Loki/Tempo correlation, and read-only diagnosis are verified against real Grafana alerts. Disposable repair containment and recovery verification are verified via deterministic simulation and tests. Live autonomous AI code remediation remains unproven; the live provider mode is a supervised local experiment, not autonomous remediation. The limited diagnosis-only PR was approved and merged; full autonomous AI code remediation is still unproven.
+
+### Maintainer-reported supervised live run
+
+The maintainer reported one local `live_provider` run at feature-branch commit `2cc525107d2cf977e8c9dc9e0bf68b0f478b5a65`. This is a report supplied by the maintainer, not an independently inspected recording, CI run, or merged-main result. No run date or external evidence artifact was supplied.
+
+- **Provider:** The run reported `provider_response=reported_received`. The presented diff removed the injected regression block that raised `RuntimeError` for urgent tasks. The report associates the diff with the live-provider response.
+- **Human review and application:** The maintainer inspected the diff and entered `YES`. The reported fields were `approval=approved` and `application=applied`; application was to a disposable workspace.
+- **After verification:** The run reported `after=passed`, `success=true`, and `pytest_advisory=true`. The report contains no raw worker output or separate HTTP/SQLite observations; do not treat it as an independently verified test transcript.
+- **Limits:** Pytest imports candidate code in-process and is advisory. The HTTP verifier is a separate process inside the same container, not a separate security domain. SQLite inspection shares the candidate's user identity and filesystem permissions. These checks do not establish an independent security boundary or prove general correctness.
+
+The incident context for this drill is simulated. No evidence supplied for this run shows that a real alert triggered it, that the model applied the patch autonomously, or that production was repaired. The earlier Grafana-triggered read-only diagnosis and mock repair are separate evidence. The live experiment requires one supervised execution, human review, and no concurrent writers.
 
 ---
 
 ## 7. Reproducible Local Commands
 
-### 7.1 Running Automated Unit & Security Tests
+### 7.1 Running Controlled Model Remediation Drill
+Execute the controlled 5-stage demonstration flow for DeepSeekAgentAdapter with explicit human approval, isolated worker evaluation, and before/after HTTP verification:
+
+```bash
+uv run --project backend pytest incident-response/tests/test_model_drill.py -v
+uv run --project backend python incident-response/model_drill.py
+```
+
+To opt into a supervised live provider experiment, an operator can set the key in the current shell without displaying it or saving it in the repository. For example, in Bash:
+
+```bash
+read -rs -p 'DeepSeek API key: ' DEEPSEEK_API_KEY; echo
+export DEEPSEEK_API_KEY
+uv run --project backend python incident-response/model_drill.py --mode live_provider
+unset DEEPSEEK_API_KEY
+```
+
+On PowerShell, use a secure prompt and remove the environment variable afterwards:
+
+```powershell
+$env:DEEPSEEK_API_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'DeepSeek API key' -AsSecureString)).Password
+uv run --project backend python incident-response/model_drill.py --mode live_provider
+Remove-Item Env:DEEPSEEK_API_KEY
+```
+
+The live request sends the disposable `backend/main.py` content and synthetic incident context to DeepSeek; review the data and provider terms before running it. The CLI prints the proposed diff and hashes, then requires the operator to type `YES`; any other answer withholds application. A successful AFTER result still has the shared-permission verification limits above. Do not run concurrent drills or writers. No live DeepSeek execution or human-reviewed live repair has been demonstrated by the automated tests.
+
+### 7.2 Recovering Orphaned Containers Safely
+Automatic orphan recovery is disabled because the registry is not a reliable cross-process ownership record. Do not use bulk removal commands. List and inspect resources individually:
+
+```bash
+docker ps -a --filter "label=tasklane.component=isolated-worker" --no-trunc
+docker container inspect <individual-container-id>
+```
+
+Confirm the full ID, name, labels, session and activity with the responsible operator before deciding whether to remove that individual container. Unknown or corrupt registry state is not evidence of cleanup.
+
+### 7.3 Running Automated Unit & Security Tests
 Verify all 54 responder tests at merged PR #9 baseline, covering alert validation, atomic token auth, single-use consumption, incorrect-token preservation, workspace registry, positive manifest isolation, unsafe override rejection, and mock remediation:
 
 ```bash

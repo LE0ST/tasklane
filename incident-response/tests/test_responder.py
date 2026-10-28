@@ -59,7 +59,7 @@ def clean_state():
     set_active_adapter(MockAgentAdapter())
 
 
-def _post_json(path: str, data: dict, headers: dict = None, timeout: float = 25.0):
+def _post_json(path: str, data: dict, headers: dict = None, timeout: float = 60.0):
     url = f"{BASE_URL}{path}"
     body = json.dumps(data).encode("utf-8")
     req_headers = {"Content-Type": "application/json", "Content-Length": str(len(body))}
@@ -76,7 +76,7 @@ def _post_json(path: str, data: dict, headers: dict = None, timeout: float = 25.
             return exc.code, {}
 
 
-def _get_json(path: str, timeout: float = 25.0):
+def _get_json(path: str, timeout: float = 60.0):
     url = f"{BASE_URL}{path}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
     try:

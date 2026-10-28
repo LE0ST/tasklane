@@ -100,6 +100,9 @@ jobs:
           CI: "true"
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/tasklane_test
 
+      - name: Build isolated test worker container image
+        run: docker build -t tasklane-isolated-worker:local -f incident-response/Dockerfile.worker incident-response
+
       - name: Run on-call incident-response unit and security tests
         working-directory: backend
         run: uv run pytest ../incident-response/tests -v

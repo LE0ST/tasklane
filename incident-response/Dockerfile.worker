@@ -1,0 +1,35 @@
+# Dedicated isolated test worker container for TaskLane on-call remediation verification.
+# Runs candidate patched code with NO network egress, unprivileged non-root user,
+# read-only root filesystem, and strict resource bounding.
+FROM python:3.11-slim
+
+# Create dedicated unprivileged non-root user (uid 10001, gid 10001)
+RUN groupadd -g 10001 worker && useradd -u 10001 -g worker -m -d /home/worker -s /bin/sh worker
+
+WORKDIR /workspace
+
+# Install exact pinned test verification dependencies matching backend
+RUN pip install --no-cache-dir \
+    pytest==9.1.1 \
+    fastapi==0.141.1 \
+    uvicorn==0.53.0 \
+    starlette==1.6.0 \
+    pydantic==2.13.5 \
+    sqlalchemy==2.0.53 \
+    httpx==0.28.1 \
+    anyio==4.15.1 \
+    pyyaml==6.0.3 \
+    alembic==1.20.0 \
+    opentelemetry-api==1.37.0 \
+    opentelemetry-sdk==1.37.0 \
+    opentelemetry-exporter-otlp-proto-http==1.37.0
+
+# Switch to unprivileged non-root user
+USER 10001:10001
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/workspace/backend:/workspace
+
+ENTRYPOINT ["python"]
+CMD ["-c", "print('tasklane-isolated-worker ready')"]
