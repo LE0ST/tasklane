@@ -1,6 +1,6 @@
 # Issue #4 — Local On-Call Diagnostic Responder and Mock Recovery
 
-**Status (October 26, 2026):** [PR #9](https://github.com/LE0ST/tasklane/pull/9) was human-authorized and squash-merged to `main` as [`7c73446`](https://github.com/LE0ST/tasklane/commit/7c7344690bf3260297301a14f434d00cb6eb123a). [Merged-main GitHub Actions 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed all four jobs. The local Grafana alert-driven **read-only diagnosis** is implemented; deterministic mock fixture repair was separately tested. At that merged baseline, no live LLM-authored fix or independently isolated write-capable agent repair was demonstrated. A later supervised feature-branch run is recorded below.
+**Historical baseline (October 26, 2026):** [PR #9](https://github.com/LE0ST/tasklane/pull/9) was human-authorized and squash-merged to `main` as [`7c73446`](https://github.com/LE0ST/tasklane/commit/7c7344690bf3260297301a14f434d00cb6eb123a). [Merged-main GitHub Actions 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) passed all four jobs. The local Grafana alert-driven **read-only diagnosis** is implemented; deterministic mock fixture repair was separately tested. At that merged baseline, no live LLM-authored fix or independently isolated write-capable agent repair was demonstrated. The later supervised drill was merged in [PR #15](https://github.com/LE0ST/tasklane/pull/15) as `65378015cad42e107148ec0f6618472b54a1e36b`; its [push-to-main CI](https://github.com/LE0ST/tasklane/actions/runs/40618254717) passed all four jobs. The maintainer-reported run is recorded below.
 
 ---
 
@@ -9,7 +9,7 @@
 According to the official **AI Dev Tools Zoomcamp 2026** course rubric:
 - **On-Call Agent (2 points):** An agent wakes up on an alert and **fixes the issue**. A passive webhook receiver that only outputs diagnostic logs is insufficient.
 
-TaskLane implements a bounded, local-only **diagnostic responder**, a separate mock exercise, and a supervised live-provider drill on a feature branch. It does not yet demonstrate an autonomous AI fix:
+TaskLane implements a bounded, local-only **diagnostic responder**, a separate mock exercise, and a supervised live-provider drill merged in PR #15. It does not yet demonstrate an autonomous AI fix:
 1. **Wakes Up on Alert:** Receives real local Grafana `TaskLane5xxRate` webhook notifications on `POST /alerts` (port 8001).
 2. **Read-Only Diagnosis by Default:** Correlates local Prometheus metrics (`tasklane_task_5xx_errors_total`), structured Loki logs (`{service_name="tasklane-api"}` for `/api/tasks` 5xx), and Tempo SERVER ERROR spans without granting write permissions (`write_authorized: false`).
 3. **Strict Network-Facing Read-Only Policy:** Network-facing repair is disabled by default in normal service mode (`/authorize-repair` returns HTTP 403 `repair_disabled`). HTTP repair is permitted only when explicitly enabled locally for isolated demonstration via `TASKLANE_ALLOW_HTTP_REPAIR=true`.
@@ -165,7 +165,7 @@ The defect fixture (`fixtures.py`) introduces a narrowly scoped regression affec
 
 ### Maintainer-reported supervised live run
 
-The maintainer reported one local `live_provider` run at feature-branch commit `2cc525107d2cf977e8c9dc9e0bf68b0f478b5a65`. This is a report supplied by the maintainer, not an independently inspected recording, CI run, or merged-main result. No run date or external evidence artifact was supplied.
+The maintainer reported one local `live_provider` run at feature-branch commit `2cc525107d2cf977e8c9dc9e0bf68b0f478b5a65`. This is a report supplied by the maintainer, not an independently inspected recording or CI run. The drill implementation and this report were later merged in PR #15; the run itself occurred at the feature-branch commit. No run date or external evidence artifact was supplied.
 
 - **Provider:** The run reported `provider_response=reported_received`. The presented diff removed the injected regression block that raised `RuntimeError` for urgent tasks. The report associates the diff with the live-provider response.
 - **Human review and application:** The maintainer inspected the diff and entered `YES`. The reported fields were `approval=approved` and `application=applied`; application was to a disposable workspace.
