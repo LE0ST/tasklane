@@ -1,7 +1,7 @@
 ﻿.app-container {
-  max-width: 1440px;
+  max-width: 1920px;
   margin: 0 auto;
-  padding: 1.5rem 1rem;
+  padding: 1.5rem clamp(1rem, 2vw, 2rem);
   display: flex;
   flex-direction: column;
   min-height: 100vh;
@@ -20,7 +20,7 @@
 }
 
 .brand-section h1 {
-  font-size: 1.75rem;
+  font-size: 1.875rem;
   font-weight: 700;
   color: var(--text-main);
   letter-spacing: -0.025em;
@@ -43,7 +43,7 @@
   border: 1px solid var(--border-color);
   padding: 0.5rem 0.85rem;
   border-radius: 0.375rem;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   outline: none;
   min-width: 220px;
 }
@@ -57,7 +57,7 @@
   border: 1px solid var(--border-color);
   padding: 0.5rem 0.85rem;
   border-radius: 0.375rem;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   outline: none;
   cursor: pointer;
 }
@@ -69,7 +69,7 @@
   padding: 0.5rem 1rem;
   border-radius: 0.375rem;
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   cursor: pointer;
   transition: background-color 0.15s ease;
 }
@@ -83,6 +83,7 @@
   display: grid;
   grid-template-columns: repeat(5, minmax(240px, 1fr));
   gap: 1rem;
+  min-width: 0;
   overflow-x: auto;
   padding-bottom: 1.5rem;
   align-items: start;
@@ -108,7 +109,7 @@
 }
 
 .column-title {
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -118,7 +119,7 @@
 .task-count {
   background-color: var(--border-color);
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   padding: 0.15rem 0.5rem;
   border-radius: 9999px;
   font-weight: 700;
@@ -132,7 +133,7 @@
 
 .empty-column-msg {
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.9375rem;
   text-align: center;
   padding: 2rem 0.5rem;
   border: 1px dashed var(--border-color);
@@ -144,7 +145,7 @@
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 0.375rem;
-  padding: 0.875rem;
+  padding: 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -164,7 +165,7 @@
 }
 
 .task-title {
-  font-size: 0.925rem;
+  font-size: 1rem;
   font-weight: 600;
   color: var(--text-main);
   word-break: break-word;
@@ -187,7 +188,7 @@
 }
 
 .task-description {
-  font-size: 0.825rem;
+  font-size: 0.9rem;
   color: var(--text-muted);
   word-break: break-word;
   white-space: pre-wrap;
@@ -203,7 +204,7 @@
 }
 
 .priority-badge {
-  font-size: 0.7rem;
+  font-size: 0.75rem;
   font-weight: 700;
   text-transform: uppercase;
   padding: 0.15rem 0.45rem;
@@ -245,7 +246,7 @@
   color: var(--text-main);
   padding: 0.2rem 0.5rem;
   border-radius: 0.25rem;
-  font-size: 0.75rem;
+  font-size: 0.875rem;
   cursor: pointer;
   font-weight: 700;
 }
@@ -352,4 +353,15 @@
 .error-msg {
   color: var(--danger);
   font-size: 0.825rem;
+}
+
+@media (max-width: 600px) {
+  .header-controls {
+    width: 100%;
+  }
+
+  .search-input {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
 }
