@@ -33,7 +33,8 @@
 - [x] Verify Project 1 deadline against the **authenticated maintainer account**: **October 26, 2026 at 18:00 in the account's configured timezone**. The logged-out public preview instead displayed 23:00 in a different viewer timezone. This is a historical observation; check current platform instructions before any update. [Course page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1).
 - [x] Submission saved, as confirmed by the maintainer; independent platform verification and the saved SHA remain unverified.
 - [ ] Verify the exact currently saved SHA and retain submission evidence; update only if appropriate and permitted.
-- [ ] **Complete three required peer reviews** of other participants on the course platform and retain evidence of each. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit.
+- [x] **Complete and score three required peer reviews**, as confirmed by the maintainer. This is a **pass/fail requirement** according to the official course rubric, not optional extra credit; the platform records have not been independently verified.
+- [ ] Independently verify or retain evidence of the three peer-review records when available.
 
 ## Project 1 submission form — historical observation (October 26, 2026)
 
@@ -48,7 +49,7 @@ The authenticated page displayed October 26, 2026 at 18:00 in the maintainer acc
 | FAQ contribution PR or issue URL (optional) | Only an actual qualifying contribution |
 | Certificate name | The name the maintainer wants printed on the certificate |
 
-**Submission and peer review are separate obligations.** Saving a project does not satisfy the requirement to review three other participants' projects. After submitting, use the platform's review assignments/instructions, score **three** projects using the [official rubric](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md), and retain completion evidence. The public unauthenticated page does not expose the participant-specific review workflow.
+**Submission and peer review are separate obligations.** Saving a project does not satisfy the requirement to review three other participants' projects. The maintainer confirms that three projects were reviewed and scored using the course platform; independent verification of those records and retained evidence remain outstanding. The [official rubric](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md) describes the review requirement. The public unauthenticated page does not expose the participant-specific review workflow.
 
 ## Do not overstate
 
