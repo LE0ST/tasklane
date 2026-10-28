@@ -134,6 +134,8 @@ The delivery of Issue #1 demonstrates the operational reality of this collaborat
 5. **Secondary QA Re-Review (GPT-6.1 Sol):** Sol re-audited the updated diff, confirmed all nine original findings were fully resolved, and identified this remaining documentation-integrity item regarding transparent GitHub account attribution.
 6. **Governance Gate (Human Maintainer `LE0ST`):** This historical account concerns PR #6, which the human maintainer explicitly authorized and which was squash-merged to `main` on October 23, 2026 as `f6f4c7b`. External agent reviews are not native GitHub approval submissions; no agent independently approved or executed the merge. PR #7, PR #8 and the limited read-only diagnosis-only PR #9 were later merged after review and explicit maintainer authorization. Sol's security approval was on an earlier PR #9 HEAD, and Astra approved the final HEAD for the identity-only SRE gate. The external reports are not GitHub-native reviews.
 
+**Later Issue #4 implementation:** GPT-6.1 Terra implemented the supervised-review and worker fixes, the explicit live-provider drill, and the associated evidence corrections on `project1/deepseek-adapter`; Sol reviewed findings independently. The maintainer reported the live drill and approved the human-reviewed disposable-workspace application. [PR #15](https://github.com/LE0ST/tasklane/pull/15) was squash-merged as `65378015cad42e107148ec0f6618472b54a1e36b`. These later contributions do not change Flash's documented work on earlier PRs. GitHub activity used the maintainer's account; external agent reports are not native GitHub approval reviews.
+
 ---
 
 ## 5. Operational Boundaries & Safety Guarantees
@@ -142,7 +144,7 @@ The delivery of Issue #1 demonstrates the operational reality of this collaborat
 2. **Environment Variable & Secret Protection:** No agent may retrieve, print, log, or commit cloud connection strings (`DATABASE_URL`), API tokens, or session secrets.
 3. **Database Safeguards:**
    - Active production runs on Neon PostgreSQL 16 (`import` branch, `neondb`).
-   - Former Render PostgreSQL (`tasklane-db`) served only as a temporary reference source and expires on October 24, 2026. It is NOT a permanent backup.
+   - Former Render PostgreSQL (`tasklane-db`) served only as a temporary reference source and was scheduled to expire on October 24, 2026. Its current availability is unverified; it is NOT a permanent backup.
    - No agent may trigger destructive database drops or unapproved migrations.
 4. **Responder Sandbox Safety:**
    - Any automated incident responder built under Issue #4 must default strictly to **read-only sandbox mode** (`-s read-only`).

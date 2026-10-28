@@ -269,7 +269,7 @@ TaskLane is publicly deployed on **Render** with persistent serverless storage o
 ### Operational Considerations & Continuity
 - **Cold starts**: Free web services may sleep during inactivity and take longer to answer their first request. Do not assume a fixed wake-up time; allow time for the public health endpoint to respond.
 - **Plan quotas**: Free plans and cloud quotas may change; verify live limits in each provider dashboard.
-- **Database Continuity**: Neon Serverless PostgreSQL removes Render Free's fixed 30-day expiration schedule, mitigating the imminent October 24 database shutdown risk for project submission and peer review (cloud free-tier services remain subject to standard platform quotas and idle behavior).
+- **Database Continuity**: Neon Serverless PostgreSQL removes Render Free's fixed 30-day expiration schedule, replacing the former database whose scheduled expiration was October 24, 2026 (cloud free-tier services remain subject to standard platform quotas and idle behavior).
 - **Public Demonstration Disclaimer**: This deployment is an unauthenticated educational demonstration. Do not submit sensitive, personal, or confidential information.
 
 ---
@@ -281,7 +281,7 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | Resource | Link | Summary |
 |:---|:---|:---|
 | **Agent Entry Point** | [`AGENTS.md`](AGENTS.md) | Central entry point and operational manual for development agents |
-| **Agent Team Specification** | [`docs/teams.md`](docs/teams.md) | Agent roster (Luna, Flash, Sol, Astra, Argon, Maintainer), RACI matrix, and boundaries |
+| **Agent Team Specification** | [`docs/teams.md`](docs/teams.md) | Agent roster (Luna, Flash, Terra, Sol, Astra, Argon, Maintainer), RACI matrix, and boundaries |
 | **Engineering Process** | [`docs/process.md`](docs/process.md) | Verified 13-stage delivery lifecycle, review handoffs, and no-fabrication policy |
 | **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete system topology, container layers, and Neon database integration |
 | **Local Observability Demo** | [`docs/observability.md`](docs/observability.md) | Optional OTel stack, reproducible CI correlation evidence, metrics/logs/traces and Grafana instructions |
@@ -294,19 +294,19 @@ TaskLane's AI-assisted development workflow for Project 1 is fully documented ac
 | **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical acceptance criteria (AC-1..AC-10) and validation rules |
 | **OpenAPI Specification** | [`openapi.yaml`](openapi.yaml) | OpenAPI 3.1 REST API contract |
 
-### Public GitHub Issue and Pull Request Status (verified October 26, 2026)
+### Public GitHub Issue and Pull Request Status
 
 | Issue | Status | Evidence |
 |---|---|---|
 | [#1 — Team, process, modular docs](https://github.com/LE0ST/tasklane/issues/1) | Closed | [PR #6](https://github.com/LE0ST/tasklane/pull/6), merged `f6f4c7b` |
 | [#2 — Correlated observability](https://github.com/LE0ST/tasklane/issues/2) | Closed | [PR #7](https://github.com/LE0ST/tasklane/pull/7), merged `cc9cce7` |
 | [#3 — User-impact alert and drill](https://github.com/LE0ST/tasklane/issues/3) | Closed | [PR #8](https://github.com/LE0ST/tasklane/pull/8), merged `9968999` |
-| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446`; approved limited diagnosis-only scope; a separate human-reviewed live-provider drill is reported, while alert-triggered autonomous remediation remains unproven |
-| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | [PR #10](https://github.com/LE0ST/tasklane/pull/10) and [PR #11](https://github.com/LE0ST/tasklane/pull/11) merged; verified candidate `96d3ebce69ed76345635fa5a90c82773229e0d9e`, [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) 4/4, with the matching Render deployment live; the maintainer confirms the submission is saved and updatable, without independent verification; its saved SHA and three peer reviews remain unverified |
+| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | Open — partial acceptance | [PR #9](https://github.com/LE0ST/tasklane/pull/9), squash `7c73446` for read-only diagnosis; [PR #15](https://github.com/LE0ST/tasklane/pull/15) merged the supervised drill. A separate human-reviewed live-provider run is maintainer-reported; alert-triggered autonomous remediation remains unproven |
+| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | Open | [PR #10](https://github.com/LE0ST/tasklane/pull/10) and [PR #11](https://github.com/LE0ST/tasklane/pull/11) merged; historical candidate `96d3ebce69ed76345635fa5a90c82773229e0d9e`, [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) 4/4, with the matching Render deployment live; the maintainer confirms the submission is saved and updatable, without independent verification; its saved SHA and three peer reviews remain unverified |
 
 See [the detailed traceability matrix](docs/evidence-traceability.md) for CI links, reviewer handoffs, and precise claims.
 
-The latest verified `main` run, [40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) passed all four jobs for `96d3ebce69ed76345635fa5a90c82773229e0d9e` on October 26, 2026. Render was read-only verified `live` at the same SHA. This does not establish a new public health probe.
+[PR #15](https://github.com/LE0ST/tasklane/pull/15) was squash-merged as `65378015cad42e107148ec0f6618472b54a1e36b`. Its [push-to-main CI run 40618254717](https://github.com/LE0ST/tasklane/actions/runs/40618254717) passed all four jobs. A read-only public `/health` request on October 28, 2026 UTC returned HTTP 200 and `{"status":"healthy"}`; that response does not identify the deployed SHA. The Render deployment SHA for `65378015cad42e107148ec0f6618472b54a1e36b` has not been independently verified.
 
 ---
 

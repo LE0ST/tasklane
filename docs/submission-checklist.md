@@ -1,6 +1,6 @@
 # TaskLane — Final Submission and Peer-Review Checklist
 
-**As-of:** October 26, 2026. **Purpose:** prevent inflated claims, stale SHAs, broken instructions and missing course peer reviews. The authoritative deadline and submission workflow live on the [DataTalksClub course platform](https://courses.datatalks.club/ai-dev-tools-2026/); do not assume a platform deadline time zone.
+**Historical baseline:** October 26, 2026; later evidence is noted below. **Purpose:** prevent inflated claims, stale SHAs, broken instructions and missing course peer reviews. The authoritative deadline and submission workflow live on the [DataTalksClub course platform](https://courses.datatalks.club/ai-dev-tools-2026/); do not assume a platform deadline time zone.
 
 ## Public submission metadata
 
@@ -9,6 +9,7 @@
 - API documentation: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
 - **Earlier verified baseline:** `946b582510219532d0d1e44ba8510f5ca50997e9` (squash PR #11), after documentation PR #10 (`300f4e1`); [CI 40287182535](https://github.com/LE0ST/tasklane/actions/runs/40287182535) passed 4/4, and its matching Render deployment was live.
 - **Historical verified submission candidate:** `96d3ebce69ed76345635fa5a90c82773229e0d9e` (merged `main`, October 26, 2026). [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951) passed 4/4 and Render deploy `dep-dbfn7b4s728c73dq7f90` was verified `live`. The docs-only SHA did not receive a separate public `/health` probe. The SHA currently saved on the course platform has not been independently checked. If selecting a later revision, verify its exact merged SHA and its own CI/deploy checks.
+- **Merged PR #15 and CI:** [PR #15](https://github.com/LE0ST/tasklane/pull/15) was squash-merged as `65378015cad42e107148ec0f6618472b54a1e36b`; [push-to-main CI 40618254717](https://github.com/LE0ST/tasklane/actions/runs/40618254717) passed all four jobs. This is not proof of the SHA saved on the course platform or deployed on Render.
 - **Maintainer confirmation:** The submission has been saved and the platform allows it to be updated. These are maintainer confirmations, not independent platform verification; the currently saved SHA is unknown.
 - Merged on-call diagnosis-only responder: [PR #9](https://github.com/LE0ST/tasklane/pull/9), premerge HEAD `244e58c`, squash `7c73446` in `main`; the merged baseline demonstrated no real AI-generated repair.
 - Documentation/evidence changes belong to Issue #5 and require their own review and explicit maintainer merge approval.
@@ -51,7 +52,7 @@ The authenticated page displayed October 26, 2026 at 18:00 in the maintainer acc
 
 ## Do not overstate
 
-- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. A later [maintainer-reported live-provider run](oncall-drill.md#maintainer-reported-supervised-live-run) produced a human-reviewed diff applied in a disposable workspace; it is not merged-main evidence or an alert-triggered autonomous fix. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
+- **On-call rubric:** Real Grafana alerting and correlated read-only triage are verified in the merged local-only implementation. MockAgentAdapter removes a deterministic fixture in a separate disposable TestClient/SQLite exercise. A later [maintainer-reported live-provider run](oncall-drill.md#maintainer-reported-supervised-live-run) produced a human-reviewed diff applied in a disposable workspace; the implementation and report were later merged in PR #15, but the report is not an independently verified run or an alert-triggered autonomous fix. The course reserves 2 points for an agent that wakes and fixes the issue; those points cannot be represented as earned or guaranteed.
 - **CI/CD:** CI covers four jobs and Render auto-deploys on passing checks. No staging-to-manual-production pipeline is claimed.
 - **Production database:** Current Neon SELECT evidence is read-only; historical Render DB condition was not reverified. No fresh production data mutation or independently verified backup is claimed.
 - **Security audit:** Astra and Sol provide external read-only reports/PR comments. Do not misrepresent their analyses as native GitHub reviews or approval to merge.
