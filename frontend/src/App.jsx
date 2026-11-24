@@ -136,6 +136,15 @@ export default function App() {
         </div>
       </header>
 
+      <aside className="demo-notice" aria-labelledby="demo-notice-title">
+        <strong id="demo-notice-title">Public demo — shared workspace</strong>
+        <p>
+          Anyone can view, create, edit, move, or delete tasks through this shared
+          board and API. Use fictional tasks only. Do not enter personal or
+          sensitive information.
+        </p>
+      </aside>
+
       {/* Board */}
       <main className="kanban-board">
         {COLUMNS.map((column) => {
