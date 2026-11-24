@@ -36,6 +36,22 @@ test.describe('TaskLane Kanban Board E2E Tests', () => {
     await expect(headerSubtitle).toContainText('FastAPI Connected');
   });
 
+  test('Public demo notice remains visible and usable on desktop and mobile', async ({ page }) => {
+    for (const width of [1440, 375]) {
+      await page.setViewportSize({ width, height: 900 });
+      const notice = page.getByRole('complementary', { name: 'Public demo — shared workspace' });
+      await expect(notice).toBeVisible();
+      await expect(notice).toContainText('Anyone can view, create, edit, move, or delete tasks');
+      await expect(notice).toContainText('Do not enter personal or sensitive information.');
+      const bounds = await notice.boundingBox();
+      expect(bounds.x).toBeGreaterThanOrEqual(0);
+      expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
+      await page.getByRole('button', { name: '+ New Task' }).click();
+      await expect(page.locator('.modal-content')).toBeVisible();
+      await page.getByRole('button', { name: 'Cancel' }).click();
+    }
+  });
+
   // Scenario 2: All five Kanban columns are rendered
   test('2. All five Kanban columns are rendered (Backlog, To Do, In Progress, Review, Done)', async ({ page }) => {
     const expectedColumns = ['Backlog', 'To Do', 'In Progress', 'Review', 'Done'];

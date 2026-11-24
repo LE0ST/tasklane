@@ -21,6 +21,16 @@ first request may take longer if the service has been idle.
 > the application or API. Do not enter credentials, personal information, or
 > other sensitive data.
 
+## Visual preview
+
+Captured locally with fictional tasks in a disposable demonstration database.
+
+![TaskLane board with fictional tasks in all five workflow stages](docs/assets/tasklane-board.png)
+
+See also: [task creation](docs/assets/tasklane-create-task.png),
+[API documentation](docs/assets/tasklane-api.png), and
+[mobile board](docs/assets/tasklane-mobile.png).
+
 ## Key features
 
 - Track work through **Backlog → To Do → In Progress → Review → Done**. New
