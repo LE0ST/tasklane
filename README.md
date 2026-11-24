@@ -1,323 +1,182 @@
-# TaskLane: Full-Stack Containerized Kanban Board
+# TaskLane
 
 [![CI](https://github.com/LE0ST/tasklane/actions/workflows/ci.yml/badge.svg)](https://github.com/LE0ST/tasklane/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/Render-Live%20Demo-brightgreen)](https://tasklane-app.onrender.com)
 [![Course](https://img.shields.io/badge/DataTalks.Club-AI%20Dev%20Tools%20Zoomcamp-blue)](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp)
 
-TaskLane is a publicly deployed educational full-stack Mini Kanban Board. It demonstrates spec-first implementation, an isolated PostgreSQL-backed local stack, automated CI/CD, correlated local observability, and user-impact alerting. The merged optional local-only on-call feature provides read-only diagnosis. A separate maintainer-reported live-provider drill applied a human-reviewed diff in a disposable workspace; alert-triggered autonomous repair remains unproven.
+TaskLane is a lightweight Kanban board for organizing work across five clear
+stages. Built as an educational full-stack project, it brings together a React
+interface, a validated API, persistent storage, automated delivery checks, and
+local observability.
 
-> **Public shared board (no accounts or private task lists):** The live demo uses one shared Neon-backed task collection. The FastAPI task endpoints have no authentication, user ownership or per-user authorization. Any visitor can view, create, move/edit or delete tasks—including tasks submitted by other visitors. This is an educational collaborative demo, **not** a private multi-user task manager. Never store credentials, personal information or sensitive data here.
+## Live demo
 
-- **Live Application URL**: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
-- **Interactive OpenAPI Docs**: [https://tasklane-app.onrender.com/docs](https://tasklane-app.onrender.com/docs)
-- **GitHub Repository**: [https://github.com/LE0ST/tasklane](https://github.com/LE0ST/tasklane)
+Try the [TaskLane board](https://tasklane-app.onrender.com) or explore its
+[interactive API documentation](https://tasklane-app.onrender.com/docs). The
+first request may take longer if the service has been idle.
 
----
+> [!WARNING]
+> **This is a public, shared board with no authentication or user isolation.**
+> Anyone can view, create, edit, move, or delete other visitors' tasks through
+> the application or API. Do not enter credentials, personal information, or
+> other sensitive data.
 
-## Project Overview & Evolution
+## Key features
 
-This project was developed across the **AI Dev Tools Zoomcamp 2026** by DataTalks.Club:
+- Track work through **Backlog → To Do → In Progress → Review → Done**. New
+  tasks always start in Backlog; board buttons move them one stage at a time.
+- Create and delete tasks, search titles and descriptions, and filter by
+  priority. The API also supports status filtering and partial task updates.
+- Validate input and return tasks in a deterministic newest-first order. The
+  [OpenAPI contract](openapi.yaml) describes the endpoints and responses.
+- Run the application locally with PostgreSQL in Docker Compose, or use SQLite
+  for standalone backend development.
 
-1. **Homework 2 (Spec-First Full-Stack Application)**:
-   - Defined product requirements and state transitions in `_docs/specs.md`.
-   - Designed OpenAPI 3.1 contract (`openapi.yaml`).
-   - Implemented FastAPI backend with Pydantic v2 and SQLite persistence.
-   - Built React Kanban UI with centralized API abstraction.
+## Technology stack
 
-2. **Homework 3 (Containerization, PostgreSQL, CI/CD, and Cloud Deployment)**:
-   - Upgraded database layer to **PostgreSQL 16** with **Alembic** schema migrations.
-   - Built a multi-stage production **Dockerfile** (Node 20 Alpine builder + Python 3.11 slim runtime) serving compiled static assets from FastAPI.
-   - Created **Docker Compose** stack with isolated PostgreSQL services and health checks.
-   - Implemented automated **PostgreSQL integration tests** and **Playwright E2E browser tests**.
-   - Built a 3-stage **GitHub Actions CI/CD** pipeline verifying builds, tests, Compose, and E2E in Chromium.
-   - Deployed live to **Render** (Docker Web Service).
+| Area | Technologies |
+| --- | --- |
+| Frontend | React 19, Vite, CSS |
+| API and persistence | FastAPI, Pydantic, SQLAlchemy, Alembic, PostgreSQL 16 |
+| Delivery | Docker, Docker Compose, GitHub Actions, Render, Neon |
+| Testing | pytest, PostgreSQL integration tests, Playwright |
+| Local observability | OpenTelemetry, Prometheus, Loki, Tempo, Grafana |
 
-3. **Project 1 (Observability, User-Impact Alerting, On-Call Diagnostics, and Production Continuity)**:
-   - Migrated production database to **Neon Serverless PostgreSQL 16** (`tasklane` project, **`import`** branch, `neondb` database) to secure database persistence and eliminate Render's 30-day free-tier expiration risk (the former short-lived Render database had an October 24, 2026 expiration date).
-   - The former Render PostgreSQL (`tasklane-db`) served only as a temporary reference source for migration verification prior to its expiration.
-   - Verified live migration: newly created tasks persist in Neon `neondb` and are absent from the former Render database.
-   - Established specialized multi-agent engineering workflow and modular documentation ([`docs/teams.md`](docs/teams.md), [`docs/process.md`](docs/process.md), [`docs/architecture.md`](docs/architecture.md), [`docs/project-roadmap.md`](docs/project-roadmap.md)).
-   - Established public issue tracking covering Project 1 deliverables ([GitHub Issues #1–#5](https://github.com/LE0ST/tasklane/issues)).
-   - Merged opt-in local OpenTelemetry, Prometheus/Loki/Tempo/Grafana correlation in [PR #7](https://github.com/LE0ST/tasklane/pull/7) and a real task-operation 5xx Grafana firing/recovery drill in [PR #8](https://github.com/LE0ST/tasklane/pull/8).
-   - Merged the limited local-only, read-only on-call responder via [PR #9](https://github.com/LE0ST/tasklane/pull/9) (squash commit `7c73446`). Its real Grafana-triggered diagnosis is distinct from the separate **deterministic mock** repair demonstration. A separate maintainer-reported live-provider drill applied a human-reviewed diff in a disposable workspace; it was not shown to be triggered by a real alert or to repair autonomously.
-
----
-
-## Architecture Overview
+## Architecture overview
 
 ```mermaid
-graph TD
-    subgraph Client["Client"]
-        Browser["Web browser"]
-    end
-    subgraph Render["Render web service"]
-        FastAPI["FastAPI API and migrations"]
-        Static["React 19 static assets"]
-        FastAPI --- Static
-    end
-    NeonPG[("Neon PostgreSQL 16")]
-    Browser -->|"HTTPS"| FastAPI
-    FastAPI -->|"DATABASE_URL (SSL)"| NeonPG
-    subgraph CI["GitHub Actions"]
-        GHA["Push or pull request"]
-        J1["Frontend build"]
-        J2["Backend and responder tests"]
-        J3["Docker and Playwright"]
-        J4["Telemetry and alert drill"]
-        GHA --> J1
-        J1 --> J2
-        J2 --> J3
-        J2 --> J4
-    end
+flowchart LR
+    Browser[Browser: React SPA] -->|HTTP API| App[FastAPI on Render]
+    App -->|SQLAlchemy| DB[(Neon PostgreSQL 16)]
+    App -->|Serves built assets| Browser
 ```
 
-Production uses Neon project `tasklane`, branch `import`, database `neondb`. The former Render database is a historical migration source; its current availability is unverified.
+A multi-stage Docker build packages the frontend with the FastAPI service.
+Alembic migrations run at application startup. The optional telemetry and
+on-call stacks run locally and are separate from the public deployment. See the
+[architecture guide](docs/architecture.md) and [operations
+runbook](docs/operations-runbook.md) for topology, historical deployment
+evidence, and recovery boundaries.
 
----
+## Quick start
 
-## Technology Stack
+> [!WARNING]
+> Use a clean local environment without production database credentials or a
+> production `DATABASE_URL` in your shell or `.env` file. Docker Compose uses
+> `DATABASE_URL` when set, overriding its local PostgreSQL default.
 
-| Layer | Technologies | Role / Highlights |
-|---|---|---|
-| **Frontend** | React 19, Vite 6, CSS Modules | Responsive 5-column Kanban board, live filters, modal dialogs |
-| **Backend** | FastAPI, Uvicorn, Pydantic v2 | RESTful API, input validation, static file serving, lifespan hooks |
-| **Database & ORM** | Neon PostgreSQL 16 (`import` branch), SQLAlchemy 2.0, Alembic | Active verified serverless persistence, schema migrations (`1ea1353bfe87`) |
-| **Former Database** | Render PostgreSQL 16 (`tasklane-db`) | Historical migration source; scheduled expiry was October 24, 2026; current availability unverified |
-| **Containerization** | Docker, Multi-stage builds, Docker Compose | Node 20 builder + Python 3.11 slim runtime, pinned `uv:0.12.18` |
-| **Testing** | `pytest`, `httpx`, `@playwright/test` | 76 backend + 54 on-call tests verified on merged `main` (`7c73446`); 9 browser scenarios; all four CI jobs passed |
-| **CI/CD** | GitHub Actions | Automated builds, migrations, smoke checks, Playwright E2E |
-| **Cloud Hosting** | Render Web Service + Neon PostgreSQL | Docker Web Service + Serverless PostgreSQL 16 |
+### Docker Compose
 
----
+With Docker and Compose installed, run from the repository root:
 
-## Core Features
-
-- **Deterministic 5-Stage Kanban Workflow**:
-  `Backlog` &rarr; `To Do` &rarr; `In Progress` &rarr; `Review` &rarr; `Done`.
-- **Enforced Initial Placement**: All new tasks are strictly created in `Backlog`.
-- **Sequential Card Controls**: Previous/next status transition buttons (`&larr;` / `&rarr;`), automatically disabled at column boundaries.
-- **Search & Filtering**: Real-time filtering by priority (`low`, `medium`, `high`, `urgent`) and substring search across task titles and descriptions.
-- **Deterministic Ordering**: Tasks are returned newest first (`created_at DESC`, `id DESC`).
-- **Input Validation**: Empty titles, invalid priorities, and illegal client-supplied creation statuses are rejected with `422 Unprocessable Entity`.
-- **Health Check Endpoints**: `/health` and `/api/health` returning `{"status": "healthy"}` for container and cloud orchestrators.
-
----
-
-## Project Structure
-
-```text
-tasklane/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                 # 4-job GitHub Actions CI pipeline
-├── _docs/
-│   └── specs.md                   # Product specifications and acceptance criteria
-├── backend/                       # FastAPI + SQLAlchemy + Alembic application
-│   ├── alembic/                   # Alembic configuration and migration versions
-│   │   ├── versions/
-│   │   │   └── 1ea1353bfe87_create_tasks_table.py
-│   │   └── env.py
-│   ├── tests/
-│   │   ├── test_api.py            # API, validation, and task route tests
-│   │   └── test_postgres_integration.py # PostgreSQL integration and migration checks
-│   ├── alembic.ini                # Alembic CLI configuration
-│   ├── database.py                # Database connection, engine setup, URL normalization
-│   ├── main.py                    # FastAPI entrypoint, lifespan migrations, static mounts
-│   ├── models.py                  # SQLAlchemy Task ORM model
-│   ├── pyproject.toml             # uv dependencies and pytest markers
-│   ├── schemas.py                 # Pydantic v2 schemas
-│   └── uv.lock                    # Locked Python dependency tree
-├── frontend/                      # React 19 + Vite application
-│   ├── e2e/
-│   │   └── kanban.spec.js         # 9 Playwright end-to-end browser scenarios
-│   ├── src/
-│   │   ├── services/
-│   │   │   └── api.js             # Centralized API client abstraction
-│   │   ├── App.css                # Responsive Kanban styling
-│   │   ├── App.jsx                # Board component and state logic
-│   │   ├── index.css              # Global design tokens
-│   │   └── main.jsx               # React entrypoint
-│   ├── index.html                 # Single page application template
-│   ├── package.json               # Node dependencies and scripts
-│   ├── package-lock.json          # Locked Node dependencies
-│   ├── playwright.config.js       # Playwright E2E configuration
-│   └── vite.config.js             # Vite bundler configuration
-├── AGENTS.md                      # Agent context and operational guardrails
-├── docs/                          # Modular architecture, team, process and evidence guides
-├── observability/                 # Optional local metrics/logs/traces + alert drill
-├── docker-compose.observability.yml # Optional local telemetry overlay
-├── .dockerignore                  # Docker build context exclusions
-├── .env.example                   # Environment configuration template
-├── .gitignore                     # Git version control exclusions
-├── Dockerfile                     # Multi-stage production container definition
-├── docker-compose.yml             # Local multi-service PostgreSQL + App stack
-├── openapi.yaml                   # OpenAPI 3.1 specification
-└── README.md                      # Comprehensive project documentation
-```
-
----
-
-## Local Development & Running Instructions
-
-### Prerequisites
-- Docker & Docker Compose **or**:
-- Python 3.10+ with [`uv`](https://docs.astral.sh/uv/) and Node.js 20+ with `npm`.
-
-### Option A: Running with Docker Compose (Recommended)
-
-To start the full-stack containerized application with PostgreSQL 16:
 ```bash
 docker compose up --build
 ```
-This command:
-1. Builds the multi-stage Docker image packaging React into FastAPI.
-2. Starts `postgres:16-alpine` with health checks on `127.0.0.1:5432`.
-3. Runs Alembic migrations automatically on startup via FastAPI lifespan.
-4. Serves the full-stack application at **`http://localhost:8000`**.
 
-To stop and remove containers:
-```bash
-docker compose down
-# Or to also wipe local volume data:
-docker compose down -v
-```
+Open [http://localhost:8000](http://localhost:8000). Compose starts the app and
+a local PostgreSQL 16 database. Stop the stack with `docker compose down`; its
+named database volume remains available for subsequent runs.
 
-### Option B: Running Standalone Outside Docker
+### Standalone development
 
-1. **Backend**:
-   ```bash
-   cd backend
-   uv sync
-   uv run uvicorn main:app --reload --port 8000
-   ```
-   *(Defaults to local SQLite `tasklane.db` if `DATABASE_URL` is omitted).*
+Install Python 3.10+ and [uv](https://docs.astral.sh/uv/), plus Node.js 20+ and
+npm. In one terminal:
 
-2. **Frontend**:
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-   *Available at `http://localhost:5173` (proxies requests to backend on port 8000).*
-
----
-
-## Environment Variables Reference
-
-Configure environment variables in `.env` (copied from `.env.example`) or in your deployment dashboard:
-
-| Variable | Required | Default (Local) | Purpose |
-|---|---|---|---|
-| `DATABASE_URL` | No | `sqlite:///./tasklane.db` (local dev) | Connection string (PostgreSQL or SQLite). Automatically normalizes `postgres://` to `postgresql://`. |
-| `POSTGRES_USER`| No | `postgres` | PostgreSQL username in Docker Compose. |
-| `POSTGRES_PASSWORD`| No | `postgres` | PostgreSQL password in Docker Compose. |
-| `POSTGRES_DB`  | No | `tasklane` | PostgreSQL database name in Docker Compose. |
-| `PORT`         | No | `8000` | HTTP port for Uvicorn server (dynamically overridden by cloud platforms). |
-| `HOST`         | No | `0.0.0.0` | Bind host address. |
-| `VITE_API_BASE_URL` | No | `""` (production) / `http://localhost:8000` (dev) | API base path prefix for frontend. |
-
-> [!WARNING]
-> Never commit real secrets or production credentials to Git. Keep `.env` listed in `.gitignore`.
-
----
-
-## Automated Testing & Continuous Integration
-
-Backend tests can be run from the repository root with:
 ```bash
 cd backend
 uv sync --frozen
-uv run pytest -v --strict-markers
+uv run uvicorn main:app --reload --port 8000
 ```
 
-At merged `main` commit `9968999`, [Actions run 40238643032](https://github.com/LE0ST/tasklane/actions/runs/40238643032) passed **76 backend tests** and all four CI jobs. PR #9 was subsequently squash-merged to `main` as `7c73446`; [postmerge Actions run 40273628271](https://github.com/LE0ST/tasklane/actions/runs/40273628271) completed successfully with all four jobs passing. The backend job provisions PostgreSQL 16, creates a dedicated test database, applies Alembic migrations, and runs unit plus integration tests. The browser job tests the running Compose app with Playwright/Chromium (nine E2E scenarios). No production database is used in CI.
+With `DATABASE_URL` unset, the backend uses local SQLite. In another terminal:
 
-Optional local telemetry and real Grafana 5xx firing/recovery are verified using:
 ```bash
-docker build -t tasklane:hw3 .
-docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build -d
-python3 observability/smoke.py
-python3 observability/incident_smoke.py
-docker compose -f docker-compose.yml -f docker-compose.observability.yml down
+cd frontend
+npm ci
+npm run dev
 ```
 
-To reproduce the **on-call diagnosis-only overlay** merged in [PR #9](https://github.com/LE0ST/tasklane/pull/9), use the [on-call drill guide](https://github.com/LE0ST/tasklane/blob/main/docs/oncall-drill.md) and add `-f docker-compose.oncall.yml` to the local observability stack. [PR CI 40272231320](https://github.com/LE0ST/tasklane/actions/runs/40272231320) passed four jobs with 76 backend + 54 on-call tests. Real Grafana-to-responder delivery is verified; mock fixture repair does **not** prove AI-authored remediation.
+Open [http://localhost:5173](http://localhost:5173). The development client
+calls the backend at `http://localhost:8000` by default; `VITE_API_BASE_URL` can
+override it. See [.env.example](.env.example) for configuration. Never commit
+real credentials.
 
-The [CI workflow](.github/workflows/ci.yml) runs on PRs and pushes to `main` and contains four jobs:
+## Testing and CI/CD
 
-| Job | Verified purpose |
-|---|---|
-| `frontend-build` | Vite production bundle and artifact |
-| `backend-tests` | SQLite/API checks, PostgreSQL integration and Alembic migrations |
-| `docker-e2e-smoke` | Docker Compose, HTTP smoke, Playwright Chromium |
-| `observability-smoke` | Local Prometheus/Loki/Tempo/Grafana correlation, real task-operation 503 alert firing and resolution |
+Run the backend tests that do not require PostgreSQL:
 
-Render is configured to auto-deploy the `main` branch after passing checks. That is automatic production deployment after CI, **not** a distinct development staging environment plus manual production promotion. See [the deployment and recovery runbook](docs/operations-runbook.md).
+```bash
+cd backend
+uv sync --frozen
+uv run pytest -v -m "not integration"
+```
 
----
+PostgreSQL integration tests require a local test database; browser tests use
+Playwright. Setup and operational details are in the
+[runbook](docs/operations-runbook.md) and [CI
+workflow](.github/workflows/ci.yml).
 
-## Cloud Deployment (Render & Neon)
+The four CI jobs build the frontend, test the backend and responder with
+PostgreSQL integration, exercise Docker and Playwright, and verify the local
+telemetry and alert drill. For the evaluated commit
+`237fb2ca836b5f475519f92333b4fbe0c04ab850`, [CI run
+40639833135](https://github.com/LE0ST/tasklane/actions/runs/40639833135) passed
+all four jobs. Historical release and test-count evidence is retained in the
+[traceability matrix](docs/evidence-traceability.md). Render's documented
+configuration deploys `main` after checks pass; no separate
+staging-to-production promotion is claimed.
 
-TaskLane is publicly deployed on **Render** with persistent serverless storage on **Neon**:
-- **Application URL**: [https://tasklane-app.onrender.com](https://tasklane-app.onrender.com)
-- **Deployment Mode**: Render Web Service (Docker Runtime) connected directly to `LE0ST/tasklane` (`main` branch).
-- **Active Production Database**: **Neon Serverless PostgreSQL 16** (`tasklane` project, **`import`** branch, `neondb` database).
-- **Former Source Database**: Render Managed PostgreSQL 16 (`tasklane-db`) was used as a historical migration reference and had an October 24, 2026 expiry. Its current availability was not reverified and it is **not** a backup.
-- **Production Migration Verification**: A prior migration test confirmed new tasks in Neon rather than the then-available Render source database. Read-only Neon queries through October 26 confirmed two tasks, including the original migration-check task, and Alembic revision `1ea1353bfe87`. No fresh query against the former Render database was performed.
-- **Secure Networking**: Web Service communicates with Neon over SSL via a protected `DATABASE_URL` environment variable.
-- **Automatic Migrations**: Alembic migrations run automatically on container startup inside the FastAPI lifespan handler.
-- **Graceful Shutdown**: The Dockerfile entrypoint uses `exec uvicorn` to receive POSIX `SIGTERM` signals directly from Render.
+## Observability and incident response
 
-### Operational Considerations & Continuity
-- **Cold starts**: Free web services may sleep during inactivity and take longer to answer their first request. Do not assume a fixed wake-up time; allow time for the public health endpoint to respond.
-- **Plan quotas**: Free plans and cloud quotas may change; verify live limits in each provider dashboard.
-- **Database Continuity**: Neon Serverless PostgreSQL removes Render Free's fixed 30-day expiration schedule, replacing the former database whose scheduled expiration was October 24, 2026 (cloud free-tier services remain subject to standard platform quotas and idle behavior).
-- **Public Demonstration Disclaimer**: The production Kanban board is public and shared; any visitor can read, create, edit and delete the same tasks. No private accounts or per-user isolation are provided. Do not submit confidential information.
+An optional local stack correlates metrics, logs, and traces using
+OpenTelemetry, Prometheus, Loki, Tempo, and Grafana. A local drill exercises a
+real task-operation 5xx alert and its recovery. See the [observability
+guide](docs/observability.md) and [incident drill](docs/incident-drill.md).
 
----
+The local on-call overlay receives a real Grafana alert and performs **read-only
+diagnosis**. A separate deterministic mock drill demonstrates fixture repair.
+Separately, the maintainer reports a live-provider diff that was reviewed and
+approved by a human and applied in a disposable workspace; that report was not
+independently verified. An integrated flow in which a real alert triggers
+autonomous AI repair and verifies recovery has **not** been demonstrated.
+Details and evidence boundaries are in the [on-call
+drill](docs/oncall-drill.md).
 
-## Project 1 Modular Documentation & Public Issue Tracker
+## Project overview & evolution
 
-TaskLane's AI-assisted development workflow for Project 1 is fully documented across modular specifications:
+TaskLane evolved from a spec-first application into a containerized deployment
+with automated checks and local incident drills. It demonstrates API contract
+design, database migrations, end-to-end testing, deployment, telemetry
+correlation, and evidence-based limits on AI-assisted operations. Its
+[engineering process](docs/process.md) and [agent roles](docs/teams.md) document
+the human-governed workflow.
 
-| Resource | Link | Summary |
-|:---|:---|:---|
-| **Agent Entry Point** | [`AGENTS.md`](AGENTS.md) | Central entry point and operational manual for development agents |
-| **Agent Team Specification** | [`docs/teams.md`](docs/teams.md) | Agent roster (Luna, Flash, Terra, Sol, Astra, Argon, Maintainer), RACI matrix, and boundaries |
-| **Engineering Process** | [`docs/process.md`](docs/process.md) | Verified 13-stage delivery lifecycle, review handoffs, and no-fabrication policy |
-| **System Architecture** | [`docs/architecture.md`](docs/architecture.md) | Concrete system topology, container layers, and Neon database integration |
-| **Local Observability Demo** | [`docs/observability.md`](docs/observability.md) | Optional OTel stack, reproducible CI correlation evidence, metrics/logs/traces and Grafana instructions |
-| **Local Incident Drill** | [`docs/incident-drill.md`](docs/incident-drill.md) | Versioned Grafana 5xx alert and webhook, guarded 503 injection, reproducible firing/recovery evidence |
-| **On-Call Responder (merged, local-only)** | [PR #9](https://github.com/LE0ST/tasklane/pull/9) | Real Grafana-triggered read-only diagnosis; separate deterministic mock-only repair, not an AI-generated fix |
-| **Evidence & Traceability** | [`docs/evidence-traceability.md`](docs/evidence-traceability.md) | Issue → PR → commit → CI chain and evidence boundaries |
-| **Operations & Recovery** | [`docs/operations-runbook.md`](docs/operations-runbook.md) | Render/Neon verification, rollback decision tree and DB safety |
-| **Submission Checklist** | [`docs/submission-checklist.md`](docs/submission-checklist.md) | Exact submission SHA, peer review obligations and remaining gates |
-| **Project Roadmap** | [`docs/project-roadmap.md`](docs/project-roadmap.md) | Milestones, rubric criteria mapping, and tracking of Issues #1–#5 |
-| **Product Specification** | [`_docs/specs.md`](_docs/specs.md) | Canonical acceptance criteria (AC-1..AC-10) and validation rules |
-| **OpenAPI Specification** | [`openapi.yaml`](openapi.yaml) | OpenAPI 3.1 REST API contract |
+## Project results and acknowledgments
 
-### Public GitHub Issue and Pull Request Status
+TaskLane was the final Project 1 for [DataTalks.Club's AI Dev Tools Zoomcamp
+2026](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp).
 
-| Issue | Status | Evidence |
-|---|---|---|
-| [#1 — Team, process, modular docs](https://github.com/LE0ST/tasklane/issues/1) | Closed | [PR #6](https://github.com/LE0ST/tasklane/pull/6), merged `f6f4c7b` |
-| [#2 — Correlated observability](https://github.com/LE0ST/tasklane/issues/2) | Closed | [PR #7](https://github.com/LE0ST/tasklane/pull/7), merged `cc9cce7` |
-| [#3 — User-impact alert and drill](https://github.com/LE0ST/tasklane/issues/3) | Closed | [PR #8](https://github.com/LE0ST/tasklane/pull/8), merged `9968999` |
-| [#4 — Bounded on-call responder](https://github.com/LE0ST/tasklane/issues/4) | **Closed — partial scope (remaining autonomous repair not planned)** | [PR #9](https://github.com/LE0ST/tasklane/pull/9): real alert-triggered local read-only diagnosis; [PR #15](https://github.com/LE0ST/tasklane/pull/15): separate supervised DeepSeek drill. [Recorded closure](https://github.com/LE0ST/tasklane/issues/4#issuecomment-6460818260). No full autonomous repair or guaranteed On-Call rubric credit. |
-| [#5 — Final audit and evidence](https://github.com/LE0ST/tasklane/issues/5) | **Closed — completed** | [PR #16](https://github.com/LE0ST/tasklane/pull/16): final documentation; [PR #17](https://github.com/LE0ST/tasklane/pull/17): CSS polish. App release `cffdf3c5a9813846c3a85a5d8c1b0548b0c45138` passed [push CI 40632293401](https://github.com/LE0ST/tasklane/actions/runs/40632293401) 4/4; Render deploy `dep-dbgnlhnb9u1s7394br00` verified `live` at matching SHA. [Recorded closure](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6460818783). Three peer reviews completed/scored per maintainer (platform records not independently verified); the SHA saved in the course form is unknown. |
+- Final project: **Passed**.
+- Technical project score: **21/24**.
+- Peer review score: **9**.
+- Total score: **30**.
+- Course certificate: **Earned**.
 
-See [the detailed traceability matrix](docs/evidence-traceability.md) for CI links, reviewer handoffs, and precise claims.
+The project demonstrates the practical application of AI-assisted software
+engineering, from product specification to cloud deployment and local incident
+response. The certificate recognizes course completion, not independent
+certification of the software.
 
-**Latest independently verified application release (October 28, 2026 UTC):** `cffdf3c5a9813846c3a85a5d8c1b0548b0c45138`. [Post-merge CI 40632293401](https://github.com/LE0ST/tasklane/actions/runs/40632293401) passed 4/4, and Render deploy `dep-dbgnlhnb9u1s7394br00` was verified `live` at the same SHA. A fresh direct public HTTP 200 was **not** obtained for that exact release, and this does not verify the SHA saved on the course platform. Historical [PR #15](https://github.com/LE0ST/tasklane/pull/15) merged as `65378015cad42e107148ec0f6618472b54a1e36b` with [CI 40618254717](https://github.com/LE0ST/tasklane/actions/runs/40618254717) 4/4.
+## Documentation
 
----
-
-## Operations, Rollback & Submission
-
-**Current app release:** Render Docker Web Service `tasklane-app` follows `main` and deploys after CI passes. [CI 40632293401](https://github.com/LE0ST/tasklane/actions/runs/40632293401) passed 4/4 for `cffdf3c5a9813846c3a85a5d8c1b0548b0c45138`; matching Render deploy `dep-dbgnlhnb9u1s7394br00` was verified `live`. **Historical baseline:** on October 26, 2026, `96d3ebce69ed76345635fa5a90c82773229e0d9e` passed [CI 40350303951](https://github.com/LE0ST/tasklane/actions/runs/40350303951), and Render deploy `dep-dbfn7b4s728c73dq7f90` was `live`. [Earlier public health evidence](https://github.com/LE0ST/tasklane/issues/5#issuecomment-6410875915) does not establish a new direct HTTP probe for the final app release. The submission's saved SHA is not independently verified.
-
-**Application rollback is not database rollback.** First select a previously healthy compatible commit/deploy in the Render dashboard, check application health and compatibility with the current Alembic schema, then verify read-only database state. Never trigger `alembic downgrade` or restore production data as an automatic response to a bad app deploy. There is no independently verified backup snapshot claimed here.
-
-See [Operations & Recovery](docs/operations-runbook.md) and [Submission Checklist](docs/submission-checklist.md). No rollback or production mutation was executed while preparing this documentation.
-
-**Course peer review requirement:** three reviews of other participants are mandatory according to the [official project criteria](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp/blob/main/project/README.md). The maintainer confirms completing and scoring three reviews; the platform records have not been independently verified. The [course Project 1 page](https://courses.datatalks.club/ai-dev-tools-2026/project/project1) can display **different deadline clock times** depending on the viewer/account timezone. On October 26, 2026, the authenticated maintainer account displayed **18:00 in its configured timezone**, whereas the logged-out public preview displayed 23:00. These are historical observations; check the current platform instructions before making any update. The maintainer confirms that a submission is saved and can be updated, without independent verification; the saved SHA is unknown. The form requires a public repository URL and an exact commit SHA. See the [submission checklist](docs/submission-checklist.md) for platform fields and the mandatory three peer reviews.
+- [Product specification](_docs/specs.md) and [OpenAPI contract](openapi.yaml)
+- [Architecture](docs/architecture.md), [operations and
+  recovery](docs/operations-runbook.md)
+- [Observability](docs/observability.md), [incident
+  drill](docs/incident-drill.md), [on-call drill](docs/oncall-drill.md)
+- [Agent instructions](AGENTS.md), [team roles](docs/teams.md), [engineering
+  process](docs/process.md)
+- [Roadmap](docs/project-roadmap.md), [evidence and
+  traceability](docs/evidence-traceability.md), [submission
+  checklist](docs/submission-checklist.md)
+- [Public issue tracker](https://github.com/LE0ST/tasklane/issues)
