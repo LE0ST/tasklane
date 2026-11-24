@@ -150,10 +150,11 @@ the human-governed workflow.
 
 TaskLane was the final Project 1 for [DataTalks.Club's AI Dev Tools Zoomcamp
 2026](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp). The maintainer
-reports that Project 1 passed with **30 total points** and **21/24 technical
-points**, three peer reviews were completed, and the official course certificate
-was obtained. These results have not been independently verified against the
-course platform.
+reports that Project 1 **passed**, with a **21/24 technical project score**, a
+**peer review score of 9**, and a **total score of 30**. Three peer reviews were
+completed. The official certificate was awarded for the course; it is not an
+independent certification of the software. These results have not been
+independently verified against the course platform.
 
 ## Documentation
 
