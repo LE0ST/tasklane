@@ -60,6 +60,11 @@ evidence, and recovery boundaries.
 
 ## Quick start
 
+> [!WARNING]
+> Use a clean local environment without production database credentials or a
+> production `DATABASE_URL` in your shell or `.env` file. Docker Compose uses
+> `DATABASE_URL` when set, overriding its local PostgreSQL default.
+
 ### Docker Compose
 
 With Docker and Compose installed, run from the repository root:
@@ -149,12 +154,18 @@ the human-governed workflow.
 ## Project results and acknowledgments
 
 TaskLane was the final Project 1 for [DataTalks.Club's AI Dev Tools Zoomcamp
-2026](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp). The maintainer
-reports that Project 1 **passed**, with a **21/24 technical project score**, a
-**peer review score of 9**, and a **total score of 30**. Three peer reviews were
-completed. The official certificate was awarded for the course; it is not an
-independent certification of the software. These results have not been
-independently verified against the course platform.
+2026](https://github.com/DataTalksClub/ai-dev-tools-zoomcamp).
+
+- Final project: **Passed**.
+- Technical project score: **21/24**.
+- Peer review score: **9**.
+- Total score: **30**.
+- Course certificate: **Earned**.
+
+The project demonstrates the practical application of AI-assisted software
+engineering, from product specification to cloud deployment and local incident
+response. The certificate recognizes course completion, not independent
+certification of the software.
 
 ## Documentation
 
